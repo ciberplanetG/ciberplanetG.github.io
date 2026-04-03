@@ -13,8 +13,9 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-  import { getFirestore, enableIndexedDbPersistence, collection, addDoc, doc, updateDoc, deleteDoc,
-           query, orderBy, Timestamp, onSnapshot }
+  import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+           collection, addDoc, doc, updateDoc, deleteDoc,
+           query, orderBy, Timestamp, onSnapshot, getDoc, setDoc }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -27,29 +28,165 @@
     measurementId: "G-R6NEMJ771N"
   };
 
-  const app = initializeApp(firebaseConfig);
+  const app  = initializeApp(firebaseConfig);
   const auth = getAuth(app);
-  const db   = getFirestore(app);
 
-  // Persistencia offline — los datos no se pierden al recargar
-  enableIndexedDbPersistence(db).catch(err => {
-    if (err.code === 'failed-precondition') console.warn('Persistencia: múltiples pestañas abiertas');
-    else if (err.code === 'unimplemented') console.warn('Persistencia: navegador no compatible');
-  });
+  // Persistencia multi-pestaña (Firebase v10 — no se pierden datos al recargar)
+  let db;
+  try {
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+    });
+  } catch(e) {
+    // Fallback si el navegador no soporta IndexedDB
+    const { getFirestore } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    db = getFirestore(app);
+    console.warn('Persistencia no disponible, usando modo normal:', e.message);
+  }
+
+  // ── DIAGNÓSTICO FIREBASE ───────────────────────────────────────────
+  let _diagLog = [];
+  function diagLog(msg, type='info') {
+    const ts = new Date().toLocaleTimeString('es-MX');
+    _diagLog.unshift({ ts, msg, type });
+    if (_diagLog.length > 20) _diagLog.pop();
+    renderDiagPanel();
+    console.log(`[Firebase ${type}] ${msg}`);
+  }
+
+  function renderDiagPanel() {
+    const el = document.getElementById('diag-log');
+    if (!el) return;
+    el.innerHTML = _diagLog.map(l =>
+      `<div class="diag-line diag-${l.type}">[${l.ts}] ${l.msg}</div>`
+    ).join('');
+  }
+
+  window.testFirebase = async () => {
+    diagLog('Iniciando prueba de conexión…');
+    const user = auth.currentUser;
+    if (!user) { diagLog('❌ No hay sesión activa', 'error'); return; }
+    diagLog(`✅ Usuario: ${user.email} (uid: ${user.uid})`);
+    diagLog(`🌐 Dominio: ${location.hostname}`);
+    try {
+      const ref = doc(db, '_test', 'ping');
+      await setDoc(ref, { ts: Timestamp.now(), by: user.email });
+      diagLog('✅ ESCRITURA exitosa en Firestore', 'ok');
+      const snap = await getDoc(ref);
+      diagLog(snap.exists() ? '✅ LECTURA exitosa en Firestore' : '⚠️ Documento no encontrado', snap.exists()?'ok':'warn');
+    } catch(e) {
+      diagLog(`❌ ERROR: ${e.code} — ${e.message}`, 'error');
+      if (e.code === 'permission-denied')
+        diagLog('👉 Solución: actualiza las Reglas en Firebase Console', 'warn');
+      if (e.code?.includes('auth'))
+        diagLog(`👉 Agrega "${location.hostname}" a dominios autorizados en Firebase Auth`, 'warn');
+    }
+  };
+
+  window.toggleDiag = () => {
+    const p = document.getElementById('diag-panel');
+    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+  };
 
   let currentUser  = null;
   let productos    = [];
   let ventas       = [];
   // Cámara — sección Agregar
-  let codeReader   = null;
-  let cameraActive = false;
   let barcodeBuffer  = "";
   let barcodeTimeout = null;
   // Cámara — sección Ventas
-  let ventaCodeReader   = null;
-  let ventaCameraActive = false;
   let ventaBarcodeBuffer  = "";
   let ventaBarcodeTimeout = null;
+
+  // ── ESCÁNER MEJORADO ──────────────────────────────────────────────
+  // Usa BarcodeDetector nativo (Chrome/Android — muy rápido y preciso)
+  // con fallback a ZXing (Safari/iOS)
+  function crearScanner() {
+    return {
+      active: false, stream: null, frameId: null, zxingReader: null,
+
+      _beep() {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const o = ctx.createOscillator(), g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination);
+          o.frequency.value = 1760; o.type = 'sine';
+          g.gain.setValueAtTime(0.25, ctx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.13);
+          o.start(); o.stop(ctx.currentTime + 0.13);
+        } catch(e) {}
+      },
+
+      async toggle({ videoId, containerId, btnId, onCode }) {
+        if (this.active) { this.stop({ containerId, btnId }); return; }
+        this.active = true;
+        document.getElementById(containerId).style.display = 'block';
+        document.getElementById(btnId).textContent = '⏹ Detener cámara';
+
+        const video = document.getElementById(videoId);
+        const onDetected = (code) => {
+          this._beep();
+          try { navigator.vibrate?.([40, 20, 70]); } catch(e) {}
+          onCode(code);
+          this.stop({ containerId, btnId });
+        };
+
+        try {
+          if ('BarcodeDetector' in window) {
+            // ── Nativo (Chrome Android / Edge) ──
+            this.stream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+            });
+            video.srcObject = this.stream;
+            await video.play();
+            const det = new BarcodeDetector({
+              formats: ['ean_13','ean_8','code_128','code_39','code_93','upc_a','upc_e','qr_code','itf','data_matrix']
+            });
+            const loop = async () => {
+              if (!this.active) return;
+              try {
+                if (video.readyState >= 2) {
+                  const found = await det.detect(video);
+                  if (found.length) { onDetected(found[0].rawValue); return; }
+                }
+              } catch(e) {}
+              this.frameId = requestAnimationFrame(loop);
+            };
+            this.frameId = requestAnimationFrame(loop);
+          } else {
+            // ── Fallback ZXing (Safari / iOS) ──
+            let t = 0;
+            while (typeof ZXing === 'undefined' && t++ < 10) await new Promise(r => setTimeout(r, 300));
+            if (typeof ZXing === 'undefined') throw new Error('ZXing no cargó');
+            this.zxingReader = new ZXing.BrowserMultiFormatReader();
+            const devices  = await this.zxingReader.listVideoInputDevices();
+            const trasera  = devices.find(d => /back|rear|environment/i.test(d.label));
+            const deviceId = (trasera || devices[devices.length - 1])?.deviceId;
+            await this.zxingReader.decodeFromVideoDevice(deviceId, videoId, (r) => { if (r) onDetected(r.getText()); });
+          }
+        } catch(e) {
+          showToast('No se pudo acceder a la cámara', 'error');
+          this.stop({ containerId, btnId });
+        }
+      },
+
+      stop({ containerId, btnId }) {
+        this.active = false;
+        if (this.stream)    { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
+        if (this.frameId)   { cancelAnimationFrame(this.frameId); this.frameId = null; }
+        if (this.zxingReader) { try { this.zxingReader.reset(); } catch(e) {} this.zxingReader = null; }
+        const video = document.querySelector(`#${containerId} video`);
+        if (video) { video.srcObject = null; }
+        const c = document.getElementById(containerId);
+        if (c) c.style.display = 'none';
+        const b = document.getElementById(btnId);
+        if (b) b.textContent = '📷 Escanear con cámara';
+      }
+    };
+  }
+
+  const scannerAgregar = crearScanner();
+  const scannerVentas  = crearScanner();
 
   // ── AUTH ──────────────────────────────────────────────────────────
   onAuthStateChanged(auth, user => {
@@ -62,7 +199,8 @@
       loadVentas();
     } else {
       currentUser = null;
-      stopCamera();
+      scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+      scannerVentas.stop({ containerId:'camera-container-venta', btnId:'btn-camara-venta' });
       document.getElementById('login-screen').style.display = 'flex';
       document.getElementById('app-screen').style.display   = 'none';
     }
@@ -78,7 +216,11 @@
     catch(e) { err.textContent = 'Correo o contraseña incorrectos'; btn.textContent = 'Entrar'; btn.disabled = false; }
   };
 
-  window.doLogout = async () => { stopCamera(); await signOut(auth); };
+  window.doLogout = async () => {
+    scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+    scannerVentas.stop({ containerId:'camera-container-venta', btnId:'btn-camara-venta' });
+    await signOut(auth);
+  };
 
   // ── NAV ───────────────────────────────────────────────────────────
   window.showTab = (tab) => {
@@ -86,8 +228,8 @@
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('tab-' + tab).classList.add('active');
     document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
-    if (tab !== 'agregar') stopCamera();
-    if (tab !== 'ventas')  stopVentaCamera();
+    if (tab !== 'agregar') scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+    if (tab !== 'ventas')  scannerVentas.stop({ containerId:'camera-container-venta', btnId:'btn-camara-venta' });
     if (tab === 'stock')     renderStock();
     if (tab === 'ventas')    renderVentas();
     if (tab === 'dashboard') renderDashboard();
@@ -325,46 +467,14 @@
   };
 
   // ── CÁMARA ────────────────────────────────────────────────────────
-  window.toggleCamera = async () => {
-    if (cameraActive) { stopCamera(); return; }
-    document.getElementById('camera-container').style.display = 'block';
-    document.getElementById('btn-camara').textContent = '⏹ Detener cámara';
-    cameraActive = true;
-    try {
-      // esperar ZXing
-      let tries = 0;
-      while (typeof ZXing === 'undefined' && tries++ < 10) await new Promise(r=>setTimeout(r,300));
-      if (typeof ZXing === 'undefined') throw new Error('ZXing no disponible');
-
-      codeReader = new ZXing.BrowserMultiFormatReader();
-      const devices = await codeReader.listVideoInputDevices();
-      if (!devices.length) throw new Error('Sin cámara');
-      const trasera = devices.find(d=>/back|rear|environment/i.test(d.label));
-      const deviceId = (trasera || devices[devices.length-1]).deviceId;
-
-      await codeReader.decodeFromVideoDevice(deviceId, 'video-preview', (result, err) => {
-        if (result) {
-          const code = result.getText();
-          document.getElementById('p-codigo').value = code;
-          document.getElementById('scan-result-text').textContent = '✓ Código: ' + code;
-          showToast('Escaneado: ' + code);
-          stopCamera();
-        }
-      });
-    } catch(e) {
-      showToast('No se pudo acceder a la cámara', 'error');
-      stopCamera();
+  window.toggleCamera = () => scannerAgregar.toggle({
+    videoId: 'video-preview', containerId: 'camera-container', btnId: 'btn-camara',
+    onCode: (code) => {
+      document.getElementById('p-codigo').value = code;
+      document.getElementById('scan-result-text').textContent = '✓ Código: ' + code;
+      showToast('Escaneado: ' + code);
     }
-  };
-
-  function stopCamera() {
-    if (codeReader) { try { codeReader.reset(); } catch(e){} codeReader = null; }
-    cameraActive = false;
-    const c = document.getElementById('camera-container');
-    if (c) c.style.display = 'none';
-    const b = document.getElementById('btn-camara');
-    if (b) b.textContent = '📷 Escanear con cámara';
-  }
+  });
 
   // ── CÁMARA VENTAS ─────────────────────────────────────────────────
   function buscarProductoPorCodigo(code) {
@@ -381,40 +491,10 @@
     }
   }
 
-  window.toggleVentaCamera = async () => {
-    if (ventaCameraActive) { stopVentaCamera(); return; }
-    document.getElementById('camera-container-venta').style.display = 'block';
-    document.getElementById('btn-camara-venta').textContent = '⏹ Detener cámara';
-    ventaCameraActive = true;
-    try {
-      let tries = 0;
-      while (typeof ZXing === 'undefined' && tries++ < 10) await new Promise(r=>setTimeout(r,300));
-      if (typeof ZXing === 'undefined') throw new Error('ZXing no disponible');
-      ventaCodeReader = new ZXing.BrowserMultiFormatReader();
-      const devices  = await ventaCodeReader.listVideoInputDevices();
-      if (!devices.length) throw new Error('Sin cámara');
-      const trasera  = devices.find(d=>/back|rear|environment/i.test(d.label));
-      const deviceId = (trasera || devices[devices.length-1]).deviceId;
-      await ventaCodeReader.decodeFromVideoDevice(deviceId, 'video-preview-venta', (result, err) => {
-        if (result) {
-          buscarProductoPorCodigo(result.getText());
-          stopVentaCamera();
-        }
-      });
-    } catch(e) {
-      showToast('No se pudo acceder a la cámara', 'error');
-      stopVentaCamera();
-    }
-  };
-
-  function stopVentaCamera() {
-    if (ventaCodeReader) { try { ventaCodeReader.reset(); } catch(e){} ventaCodeReader = null; }
-    ventaCameraActive = false;
-    const c = document.getElementById('camera-container-venta');
-    if (c) c.style.display = 'none';
-    const b = document.getElementById('btn-camara-venta');
-    if (b) b.textContent = '📷 Escanear con cámara';
-  }
+  window.toggleVentaCamera = () => scannerVentas.toggle({
+    videoId: 'video-preview-venta', containerId: 'camera-container-venta', btnId: 'btn-camara-venta',
+    onCode: (code) => buscarProductoPorCodigo(code)
+  });
 
   window.activarLectorVenta = () => {
     document.getElementById('scanner-hidden-venta').focus();
@@ -539,11 +619,17 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .scan-btn-row{display:flex;gap:8px}
 .btn-scan{flex:1;background:var(--surface2);border:1px dashed var(--accent);color:var(--accent);padding:10px 8px;border-radius:10px;cursor:pointer;font-size:.82rem;transition:background .2s;text-align:center;font-family:'DM Sans',sans-serif}
 .btn-scan:hover{background:rgba(245,200,66,.1)}
-#camera-container{display:none;background:#000;border-radius:12px;overflow:hidden;position:relative;width:100%;aspect-ratio:4/3;max-height:260px}
-#camera-container-venta{display:none;background:#000;border-radius:12px;overflow:hidden;position:relative;width:100%;aspect-ratio:4/3;max-height:260px}
+#camera-container,#camera-container-venta{display:none;background:#000;border-radius:12px;overflow:hidden;position:relative;width:100%;aspect-ratio:16/9;max-height:280px}
 #video-preview,#video-preview-venta{width:100%;height:100%;object-fit:cover;display:block}
 .camera-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
-.camera-frame{width:70%;max-width:220px;height:100px;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.45)}
+.camera-frame{position:relative;width:72%;max-width:260px;height:110px;border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.5)}
+.camera-frame::before,.camera-frame::after{content:'';position:absolute;width:22px;height:22px;border-color:var(--accent);border-style:solid}
+.camera-frame::before{top:0;left:0;border-width:3px 0 0 3px;border-radius:8px 0 0 0}
+.camera-frame::after{bottom:0;right:0;border-width:0 3px 3px 0;border-radius:0 0 8px 0}
+.camera-frame .corner-tr{position:absolute;top:0;right:0;width:22px;height:22px;border:3px solid var(--accent);border-left:none;border-bottom:none;border-radius:0 8px 0 0}
+.camera-frame .corner-bl{position:absolute;bottom:0;left:0;width:22px;height:22px;border:3px solid var(--accent);border-right:none;border-top:none;border-radius:0 0 0 8px}
+.scan-line{position:absolute;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:scanMove 1.8s ease-in-out infinite;box-shadow:0 0 8px var(--accent)}
+@keyframes scanMove{0%{top:8%}50%{top:88%}100%{top:8%}}
 .scan-result{font-size:.86rem;color:var(--green);font-weight:500;min-height:20px}
 .scanner-hidden-input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
 
@@ -601,6 +687,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast-ok{background:var(--green);color:#000}
 .toast-error{background:var(--red);color:#fff}
+.diag-line{padding:3px 6px;border-radius:5px;line-height:1.5}
+.diag-info{color:var(--muted)}
+.diag-ok{color:var(--green);background:rgba(61,220,132,.08)}
+.diag-warn{color:var(--orange);background:rgba(255,159,67,.08)}
+.diag-error{color:var(--red);background:rgba(255,77,109,.08)}
 
 @media(max-width:420px){.form-grid{grid-template-columns:1fr}.dash-grid{grid-template-columns:1fr}.scan-btn-row{flex-direction:column}}
 </style>
@@ -639,6 +730,23 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     <div class="tab-content active" id="tab-dashboard">
       <div class="page-title">📊 Resumen del día</div>
       <div id="dashboard-content"><div class="empty-state">Cargando...</div></div>
+
+      <!-- PANEL DE DIAGNÓSTICO FIREBASE -->
+      <div style="margin-top:20px">
+        <button onclick="testFirebase();document.getElementById('diag-panel').style.display='block'"
+          style="width:100%;background:rgba(78,205,196,.1);border:1px solid var(--blue);color:var(--blue);font-family:'Syne',sans-serif;font-weight:700;padding:11px;border-radius:10px;cursor:pointer;font-size:.84rem">
+          🔧 Probar conexión Firebase
+        </button>
+      </div>
+      <div id="diag-panel" style="display:none;margin-top:10px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:.85rem">🔧 Diagnóstico Firebase</span>
+          <button onclick="toggleDiag()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem">✕</button>
+        </div>
+        <div id="diag-log" style="font-size:.75rem;font-family:monospace;display:flex;flex-direction:column;gap:4px">
+          <div class="diag-line diag-info">Presiona el botón para iniciar prueba…</div>
+        </div>
+      </div>
     </div>
 
     <!-- AGREGAR -->
@@ -661,7 +769,13 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
               </div>
               <div id="camera-container">
                 <video id="video-preview" autoplay playsinline muted></video>
-                <div class="camera-overlay"><div class="camera-frame"></div></div>
+                <div class="camera-overlay">
+                  <div class="camera-frame">
+                    <div class="corner-tr"></div>
+                    <div class="corner-bl"></div>
+                    <div class="scan-line"></div>
+                  </div>
+                </div>
               </div>
               <div class="scan-result" id="scan-result-text"></div>
             </div>
@@ -714,7 +828,13 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
               </div>
               <div id="camera-container-venta">
                 <video id="video-preview-venta" autoplay playsinline muted></video>
-                <div class="camera-overlay"><div class="camera-frame"></div></div>
+                <div class="camera-overlay">
+                  <div class="camera-frame">
+                    <div class="corner-tr"></div>
+                    <div class="corner-bl"></div>
+                    <div class="scan-line"></div>
+                  </div>
+                </div>
               </div>
               <div class="scan-result" id="scan-result-venta"></div>
             </div>
