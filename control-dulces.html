@@ -13,7 +13,7 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-  import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc,
+  import { getFirestore, enableIndexedDbPersistence, collection, addDoc, doc, updateDoc, deleteDoc,
            query, orderBy, Timestamp, onSnapshot }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
@@ -31,13 +31,25 @@
   const auth = getAuth(app);
   const db   = getFirestore(app);
 
+  // Persistencia offline — los datos no se pierden al recargar
+  enableIndexedDbPersistence(db).catch(err => {
+    if (err.code === 'failed-precondition') console.warn('Persistencia: múltiples pestañas abiertas');
+    else if (err.code === 'unimplemented') console.warn('Persistencia: navegador no compatible');
+  });
+
   let currentUser  = null;
   let productos    = [];
   let ventas       = [];
+  // Cámara — sección Agregar
   let codeReader   = null;
   let cameraActive = false;
   let barcodeBuffer  = "";
   let barcodeTimeout = null;
+  // Cámara — sección Ventas
+  let ventaCodeReader   = null;
+  let ventaCameraActive = false;
+  let ventaBarcodeBuffer  = "";
+  let ventaBarcodeTimeout = null;
 
   // ── AUTH ──────────────────────────────────────────────────────────
   onAuthStateChanged(auth, user => {
@@ -75,6 +87,7 @@
     document.getElementById('tab-' + tab).classList.add('active');
     document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
     if (tab !== 'agregar') stopCamera();
+    if (tab !== 'ventas')  stopVentaCamera();
     if (tab === 'stock')     renderStock();
     if (tab === 'ventas')    renderVentas();
     if (tab === 'dashboard') renderDashboard();
@@ -84,10 +97,18 @@
   function loadProductos() {
     const q = query(collection(db, 'productos'), orderBy('nombre'));
     onSnapshot(q, snap => {
+      setConnStatus(true);
       productos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       renderStock();
       renderProductoSelects();
       renderDashboard();
+    }, err => {
+      console.error('Firestore productos:', err);
+      setConnStatus(false);
+      if (err.code === 'permission-denied')
+        showToast('⚠️ Reglas de Firestore: actualiza en Firebase Console', 'error');
+      else
+        showToast('Sin conexión — mostrando datos en caché', 'error');
     });
   }
 
@@ -169,9 +190,13 @@
   function loadVentas() {
     const q = query(collection(db, 'ventas'), orderBy('fecha','desc'));
     onSnapshot(q, snap => {
+      setConnStatus(true);
       ventas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       renderVentas();
       renderDashboard();
+    }, err => {
+      console.error('Firestore ventas:', err);
+      setConnStatus(false);
     });
   }
 
@@ -341,6 +366,71 @@
     if (b) b.textContent = '📷 Escanear con cámara';
   }
 
+  // ── CÁMARA VENTAS ─────────────────────────────────────────────────
+  function buscarProductoPorCodigo(code) {
+    const p = productos.find(x => (x.codigo||'').trim() === code.trim());
+    const resultEl = document.getElementById('scan-result-venta');
+    if (p) {
+      document.getElementById('venta-producto').value = p.id;
+      onProductoChange();
+      if (resultEl) resultEl.textContent = '✓ ' + p.nombre;
+      showToast('Producto: ' + p.nombre);
+    } else {
+      if (resultEl) resultEl.textContent = '✗ Código no encontrado: ' + code;
+      showToast('Producto no encontrado: ' + code, 'error');
+    }
+  }
+
+  window.toggleVentaCamera = async () => {
+    if (ventaCameraActive) { stopVentaCamera(); return; }
+    document.getElementById('camera-container-venta').style.display = 'block';
+    document.getElementById('btn-camara-venta').textContent = '⏹ Detener cámara';
+    ventaCameraActive = true;
+    try {
+      let tries = 0;
+      while (typeof ZXing === 'undefined' && tries++ < 10) await new Promise(r=>setTimeout(r,300));
+      if (typeof ZXing === 'undefined') throw new Error('ZXing no disponible');
+      ventaCodeReader = new ZXing.BrowserMultiFormatReader();
+      const devices  = await ventaCodeReader.listVideoInputDevices();
+      if (!devices.length) throw new Error('Sin cámara');
+      const trasera  = devices.find(d=>/back|rear|environment/i.test(d.label));
+      const deviceId = (trasera || devices[devices.length-1]).deviceId;
+      await ventaCodeReader.decodeFromVideoDevice(deviceId, 'video-preview-venta', (result, err) => {
+        if (result) {
+          buscarProductoPorCodigo(result.getText());
+          stopVentaCamera();
+        }
+      });
+    } catch(e) {
+      showToast('No se pudo acceder a la cámara', 'error');
+      stopVentaCamera();
+    }
+  };
+
+  function stopVentaCamera() {
+    if (ventaCodeReader) { try { ventaCodeReader.reset(); } catch(e){} ventaCodeReader = null; }
+    ventaCameraActive = false;
+    const c = document.getElementById('camera-container-venta');
+    if (c) c.style.display = 'none';
+    const b = document.getElementById('btn-camara-venta');
+    if (b) b.textContent = '📷 Escanear con cámara';
+  }
+
+  window.activarLectorVenta = () => {
+    document.getElementById('scanner-hidden-venta').focus();
+    showToast('Listo — escanea con el lector físico');
+  };
+
+  window.onVentaScannerKey = (e) => {
+    clearTimeout(ventaBarcodeTimeout);
+    if (e.key !== 'Enter') ventaBarcodeBuffer += e.key;
+    if (e.key === 'Enter' && ventaBarcodeBuffer.length > 2) {
+      buscarProductoPorCodigo(ventaBarcodeBuffer);
+      ventaBarcodeBuffer = '';
+    }
+    ventaBarcodeTimeout = setTimeout(()=>{ ventaBarcodeBuffer=''; }, 150);
+  };
+
   // Lector físico
   window.onScannerKey = (e) => {
     clearTimeout(barcodeTimeout);
@@ -368,6 +458,14 @@
     document.getElementById('costo-pieza-preview').textContent =
       total&&piezas ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${gan.toFixed(2)}` : '';
   };
+
+  // ── CONEXIÓN ──────────────────────────────────────────────────────
+  function setConnStatus(online) {
+    const dot = document.getElementById('conn-dot');
+    if (!dot) return;
+    dot.title   = online ? 'Sincronizado con Firebase' : 'Sin conexión / Error de permisos';
+    dot.style.background = online ? 'var(--green)' : 'var(--red)';
+  }
 
   // ── TOAST ─────────────────────────────────────────────────────────
   window.showToast = (msg, type='ok') => {
@@ -442,7 +540,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .btn-scan{flex:1;background:var(--surface2);border:1px dashed var(--accent);color:var(--accent);padding:10px 8px;border-radius:10px;cursor:pointer;font-size:.82rem;transition:background .2s;text-align:center;font-family:'DM Sans',sans-serif}
 .btn-scan:hover{background:rgba(245,200,66,.1)}
 #camera-container{display:none;background:#000;border-radius:12px;overflow:hidden;position:relative;width:100%;aspect-ratio:4/3;max-height:260px}
-#video-preview{width:100%;height:100%;object-fit:cover;display:block}
+#camera-container-venta{display:none;background:#000;border-radius:12px;overflow:hidden;position:relative;width:100%;aspect-ratio:4/3;max-height:260px}
+#video-preview,#video-preview-venta{width:100%;height:100%;object-fit:cover;display:block}
 .camera-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
 .camera-frame{width:70%;max-width:220px;height:100px;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.45)}
 .scan-result{font-size:.86rem;color:var(--green);font-weight:500;min-height:20px}
@@ -528,6 +627,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
   <div class="topbar">
     <div class="topbar-logo">🌐 CiberPlanet</div>
     <div class="topbar-right">
+      <span id="conn-dot" title="Verificando conexión..." style="width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block;flex-shrink:0;transition:background .4s"></span>
       <span id="user-email"></span>
       <button class="logout-btn" onclick="doLogout()">Salir</button>
     </div>
@@ -605,6 +705,22 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <div class="card">
         <div class="card-title">Nueva transacción</div>
         <div class="form-grid">
+          <div class="form-group form-full">
+            <label>Buscar por código de barras</label>
+            <div class="scanner-section">
+              <div class="scan-btn-row">
+                <button class="btn-scan" id="btn-camara-venta" onclick="toggleVentaCamera()">📷 Escanear con cámara</button>
+                <button class="btn-scan" onclick="activarLectorVenta()">🔫 Lector físico</button>
+              </div>
+              <div id="camera-container-venta">
+                <video id="video-preview-venta" autoplay playsinline muted></video>
+                <div class="camera-overlay"><div class="camera-frame"></div></div>
+              </div>
+              <div class="scan-result" id="scan-result-venta"></div>
+            </div>
+            <input class="scanner-hidden-input" id="scanner-hidden-venta"
+              onkeydown="onVentaScannerKey(event)" autocomplete="off" tabindex="-1"/>
+          </div>
           <div class="form-group form-full">
             <label>Producto</label>
             <select id="venta-producto" onchange="onProductoChange()">
