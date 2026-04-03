@@ -2,15 +2,20 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Control Dulces</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>CiberPlanet</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<!-- Firebase -->
+<script src="https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js"></script>
+
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-  import { getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, orderBy, Timestamp, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc,
+           query, orderBy, Timestamp, onSnapshot }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyD4UrApmFeyQFjkkaWTphmjIqFFTWLaSfw",
@@ -24,100 +29,91 @@
 
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
-  const db = getFirestore(app);
+  const db   = getFirestore(app);
 
-  // ─── STATE ───────────────────────────────────────────────
-  let currentUser = null;
-  let productos = [];
-  let ventas = [];
-  let scannerActive = false;
-  let barcodeBuffer = "";
+  let currentUser  = null;
+  let productos    = [];
+  let ventas       = [];
+  let codeReader   = null;
+  let cameraActive = false;
+  let barcodeBuffer  = "";
   let barcodeTimeout = null;
 
-  // ─── AUTH ─────────────────────────────────────────────────
+  // ── AUTH ──────────────────────────────────────────────────────────
   onAuthStateChanged(auth, user => {
     if (user) {
       currentUser = user;
       document.getElementById('login-screen').style.display = 'none';
-      document.getElementById('app-screen').style.display = 'flex';
+      document.getElementById('app-screen').style.display   = 'flex';
       document.getElementById('user-email').textContent = user.email;
       loadProductos();
       loadVentas();
     } else {
       currentUser = null;
+      stopCamera();
       document.getElementById('login-screen').style.display = 'flex';
-      document.getElementById('app-screen').style.display = 'none';
+      document.getElementById('app-screen').style.display   = 'none';
     }
   });
 
   window.doLogin = async () => {
     const email = document.getElementById('login-email').value.trim();
-    const pass = document.getElementById('login-pass').value;
-    const btn = document.getElementById('login-btn');
-    const err = document.getElementById('login-error');
-    err.textContent = '';
-    btn.textContent = 'Entrando...';
-    btn.disabled = true;
-    try {
-      await signInWithEmailAndPassword(auth, email, pass);
-    } catch(e) {
-      err.textContent = 'Correo o contraseña incorrectos';
-      btn.textContent = 'Entrar';
-      btn.disabled = false;
-    }
+    const pass  = document.getElementById('login-pass').value;
+    const btn   = document.getElementById('login-btn');
+    const err   = document.getElementById('login-error');
+    err.textContent = ''; btn.textContent = 'Entrando...'; btn.disabled = true;
+    try { await signInWithEmailAndPassword(auth, email, pass); }
+    catch(e) { err.textContent = 'Correo o contraseña incorrectos'; btn.textContent = 'Entrar'; btn.disabled = false; }
   };
 
-  window.doLogout = async () => {
-    await signOut(auth);
-  };
+  window.doLogout = async () => { stopCamera(); await signOut(auth); };
 
-  // ─── NAVIGATION ───────────────────────────────────────────
+  // ── NAV ───────────────────────────────────────────────────────────
   window.showTab = (tab) => {
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('tab-' + tab).classList.add('active');
     document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
-    if (tab === 'stock') renderStock();
-    if (tab === 'ventas') renderVentas();
+    if (tab !== 'agregar') stopCamera();
+    if (tab === 'stock')     renderStock();
+    if (tab === 'ventas')    renderVentas();
     if (tab === 'dashboard') renderDashboard();
   };
 
-  // ─── PRODUCTOS ────────────────────────────────────────────
-  async function loadProductos() {
+  // ── PRODUCTOS — colección COMPARTIDA (sin filtro por usuario) ──────
+  function loadProductos() {
     const q = query(collection(db, 'productos'), orderBy('nombre'));
     onSnapshot(q, snap => {
       productos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       renderStock();
       renderProductoSelects();
+      renderDashboard();
     });
   }
 
   window.agregarProducto = async () => {
-    const nombre = document.getElementById('p-nombre').value.trim();
-    const codigo = document.getElementById('p-codigo').value.trim();
-    const costoTotal = parseFloat(document.getElementById('p-costo-total').value);
-    const piezas = parseInt(document.getElementById('p-piezas').value);
+    const nombre      = document.getElementById('p-nombre').value.trim();
+    const codigo      = document.getElementById('p-codigo').value.trim();
+    const costoTotal  = parseFloat(document.getElementById('p-costo-total').value);
+    const piezas      = parseInt(document.getElementById('p-piezas').value);
     const precioVenta = parseFloat(document.getElementById('p-precio-venta').value);
-    const stock = parseInt(document.getElementById('p-stock').value);
-
-    if (!nombre || !costoTotal || !piezas || !precioVenta || !stock) {
-      showToast('Llena todos los campos', 'error'); return;
+    const stock       = parseInt(document.getElementById('p-stock').value);
+    if (!nombre || !costoTotal || !piezas || !precioVenta || isNaN(stock)) {
+      showToast('Llena todos los campos obligatorios', 'error'); return;
     }
-
     const costoPieza = costoTotal / piezas;
-    const ganancia = precioVenta - costoPieza;
-
+    const ganancia   = precioVenta - costoPieza;
     await addDoc(collection(db, 'productos'), {
-      nombre, codigo, costoTotal, piezas, costoPieza,
-      precioVenta, ganancia, stock,
+      nombre, codigo, costoTotal, piezas, costoPieza, precioVenta, ganancia, stock,
       creadoEn: Timestamp.now()
     });
-
-    // clear form
     ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock'].forEach(id => {
       document.getElementById(id).value = '';
     });
-    showToast('Producto agregado ✓');
+    document.getElementById('costo-pieza-preview').textContent = '';
+    document.getElementById('scan-result-text').textContent    = '';
+    stopCamera();
+    showToast('Producto guardado ✓');
   };
 
   window.eliminarProducto = async (id) => {
@@ -129,55 +125,49 @@
   window.editarStock = async (id, delta) => {
     const p = productos.find(x => x.id === id);
     if (!p) return;
-    const nuevoStock = Math.max(0, (p.stock || 0) + delta);
-    await updateDoc(doc(db, 'productos', id), { stock: nuevoStock });
+    await updateDoc(doc(db, 'productos', id), { stock: Math.max(0, (p.stock||0) + delta) });
   };
 
   function renderStock() {
-    const search = (document.getElementById('stock-search')?.value || '').toLowerCase();
+    const search   = (document.getElementById('stock-search')?.value || '').toLowerCase();
     const filtered = productos.filter(p =>
-      p.nombre.toLowerCase().includes(search) ||
-      (p.codigo || '').toLowerCase().includes(search)
+      p.nombre.toLowerCase().includes(search) || (p.codigo||'').toLowerCase().includes(search)
     );
     const cont = document.getElementById('stock-list');
     if (!cont) return;
-    if (!filtered.length) {
-      cont.innerHTML = '<div class="empty-state">No hay productos en stock</div>'; return;
-    }
+    if (!filtered.length) { cont.innerHTML = '<div class="empty-state">No hay productos en stock</div>'; return; }
     cont.innerHTML = filtered.map(p => `
-      <div class="stock-card ${p.stock <= 5 ? 'low-stock' : ''}">
+      <div class="stock-card ${p.stock<=5?'low-stock':''}">
         <div class="stock-card-header">
           <div>
             <div class="stock-name">${p.nombre}</div>
-            <div class="stock-code">${p.codigo ? '# ' + p.codigo : 'Sin código'}</div>
+            <div class="stock-code">${p.codigo?'# '+p.codigo:'Sin código'}</div>
           </div>
-          <div class="stock-badge ${p.stock <= 5 ? 'badge-red' : 'badge-green'}">${p.stock} pzas</div>
+          <div class="stock-badge ${p.stock<=5?'badge-red':'badge-green'}">${p.stock} pzas</div>
         </div>
         <div class="stock-info">
-          <span>Costo/pza: <b>$${p.costoPieza?.toFixed(2)}</b></span>
-          <span>Venta: <b>$${p.precioVenta?.toFixed(2)}</b></span>
-          <span>Ganancia: <b class="ganancia">$${p.ganancia?.toFixed(2)}</b></span>
+          <span>Costo/pza: <b>$${(p.costoPieza||0).toFixed(2)}</b></span>
+          <span>Venta: <b>$${(p.precioVenta||0).toFixed(2)}</b></span>
+          <span class="ganancia">Ganancia: $${(p.ganancia||0).toFixed(2)}</span>
         </div>
         <div class="stock-actions">
-          <button class="btn-icon" onclick="editarStock('${p.id}', -1)">−</button>
-          <button class="btn-icon" onclick="editarStock('${p.id}', 1)">+</button>
+          <button class="btn-icon" onclick="editarStock('${p.id}',-1)">−</button>
+          <button class="btn-icon" onclick="editarStock('${p.id}',1)">+</button>
           <button class="btn-icon btn-danger" onclick="eliminarProducto('${p.id}')">🗑</button>
         </div>
-      </div>
-    `).join('');
+      </div>`).join('');
   }
 
   function renderProductoSelects() {
     const sel = document.getElementById('venta-producto');
     if (!sel) return;
     sel.innerHTML = '<option value="">— Selecciona producto —</option>' +
-      productos.map(p => `<option value="${p.id}">${p.nombre} ($${p.precioVenta})</option>`).join('');
+      productos.map(p => `<option value="${p.id}">${p.nombre} ($${(p.precioVenta||0).toFixed(2)})</option>`).join('');
   }
 
-  // ─── VENTAS ───────────────────────────────────────────────
-  async function loadVentas() {
-    const hoy = new Date(); hoy.setHours(0,0,0,0);
-    const q = query(collection(db, 'ventas'), orderBy('fecha', 'desc'));
+  // ── VENTAS ────────────────────────────────────────────────────────
+  function loadVentas() {
+    const q = query(collection(db, 'ventas'), orderBy('fecha','desc'));
     onSnapshot(q, snap => {
       ventas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       renderVentas();
@@ -186,498 +176,357 @@
   }
 
   window.onProductoChange = () => {
-    const sel = document.getElementById('venta-producto');
-    const pid = sel.value;
-    const p = productos.find(x => x.id === pid);
-    if (p) {
-      document.getElementById('venta-precio').value = p.precioVenta;
-    }
+    const p = productos.find(x => x.id === document.getElementById('venta-producto').value);
+    if (p) document.getElementById('venta-precio').value = p.precioVenta;
   };
 
   window.registrarVenta = async () => {
-    const pid = document.getElementById('venta-producto').value;
+    const pid      = document.getElementById('venta-producto').value;
     const cantidad = parseInt(document.getElementById('venta-cantidad').value);
-    const tipo = document.getElementById('venta-tipo').value;
-    const clienteNombre = document.getElementById('venta-cliente').value.trim();
-
-    if (!pid || !cantidad) { showToast('Selecciona producto y cantidad', 'error'); return; }
-
+    const tipo     = document.getElementById('venta-tipo').value;
+    const cliente  = document.getElementById('venta-cliente').value.trim();
+    if (!pid || !cantidad) { showToast('Selecciona producto y cantidad','error'); return; }
     const p = productos.find(x => x.id === pid);
     if (!p) return;
-    if (p.stock < cantidad) { showToast('Stock insuficiente', 'error'); return; }
-
-    const total = p.precioVenta * cantidad;
-    const gananciaTotal = p.ganancia * cantidad;
-    const costoTotal = p.costoPieza * cantidad;
-
+    if (p.stock < cantidad) { showToast('Stock insuficiente','error'); return; }
     await addDoc(collection(db, 'ventas'), {
-      productoId: pid,
-      productoNombre: p.nombre,
-      cantidad,
-      precioUnitario: p.precioVenta,
-      costoUnitario: p.costoPieza,
-      total,
-      gananciaTotal,
-      costoTotal,
-      tipo, // 'venta' o 'debe'
-      cliente: clienteNombre,
-      fecha: Timestamp.now(),
-      vendedor: currentUser.email
+      productoId: pid, productoNombre: p.nombre, cantidad,
+      precioUnitario: p.precioVenta, costoUnitario: p.costoPieza,
+      total: p.precioVenta*cantidad, gananciaTotal: p.ganancia*cantidad,
+      costoTotal: p.costoPieza*cantidad, tipo, cliente,
+      fecha: Timestamp.now(), vendedor: currentUser.email
     });
-
-    // descontar stock
-    await updateDoc(doc(db, 'productos', pid), { stock: p.stock - cantidad });
-
+    await updateDoc(doc(db,'productos',pid), { stock: p.stock - cantidad });
     document.getElementById('venta-producto').value = '';
     document.getElementById('venta-cantidad').value = '1';
-    document.getElementById('venta-cliente').value = '';
-    document.getElementById('venta-tipo').value = 'venta';
-    showToast(tipo === 'debe' ? `Debe registrado (${clienteNombre}) ✓` : 'Venta registrada ✓');
+    document.getElementById('venta-cliente').value  = '';
+    document.getElementById('venta-tipo').value     = 'venta';
+    document.getElementById('venta-precio').value   = '';
+    showToast(tipo==='debe'?`Debe registrado (${cliente||'cliente'}) ✓`:'Venta registrada ✓');
   };
 
   function renderVentas() {
-    const cont = document.getElementById('ventas-list');
+    const cont   = document.getElementById('ventas-list');
     if (!cont) return;
     const filtro = document.getElementById('ventas-filtro')?.value || 'hoy';
-    const hoy = new Date(); hoy.setHours(0,0,0,0);
-
+    const hoy    = new Date(); hoy.setHours(0,0,0,0);
     let filtered = ventas;
-    if (filtro === 'hoy') {
-      filtered = ventas.filter(v => v.fecha?.toDate() >= hoy);
-    } else if (filtro === 'semana') {
-      const sem = new Date(hoy); sem.setDate(sem.getDate() - 7);
-      filtered = ventas.filter(v => v.fecha?.toDate() >= sem);
-    }
-
-    if (!filtered.length) {
-      cont.innerHTML = '<div class="empty-state">Sin ventas en este período</div>'; return;
-    }
-
+    if (filtro==='hoy')    filtered = ventas.filter(v => v.fecha?.toDate() >= hoy);
+    if (filtro==='semana') { const s=new Date(hoy); s.setDate(s.getDate()-7); filtered=ventas.filter(v=>v.fecha?.toDate()>=s); }
+    if (!filtered.length) { cont.innerHTML='<div class="empty-state">Sin ventas en este período</div>'; return; }
     cont.innerHTML = filtered.map(v => {
-      const fecha = v.fecha?.toDate();
-      const fechaStr = fecha ? fecha.toLocaleString('es-MX', {dateStyle:'short', timeStyle:'short'}) : '';
-      return `
-        <div class="venta-card ${v.tipo === 'debe' ? 'venta-debe' : ''}">
-          <div class="venta-header">
-            <span class="venta-nombre">${v.productoNombre}</span>
-            <span class="venta-badge ${v.tipo === 'debe' ? 'badge-orange' : 'badge-blue'}">${v.tipo === 'debe' ? '💳 DEBE' : '✅ VENTA'}</span>
-          </div>
-          <div class="venta-info">
-            <span>${v.cantidad} pza × $${v.precioUnitario?.toFixed(2)}</span>
-            <span>Total: <b>$${v.total?.toFixed(2)}</b></span>
-            <span class="ganancia">Ganancia: $${v.gananciaTotal?.toFixed(2)}</span>
-          </div>
-          ${v.cliente ? `<div class="venta-cliente">👤 ${v.cliente}</div>` : ''}
-          <div class="venta-footer">${fechaStr} · ${v.vendedor}</div>
+      const f = v.fecha?.toDate();
+      const fs= f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
+      return `<div class="venta-card ${v.tipo==='debe'?'venta-debe':''}">
+        <div class="venta-header">
+          <span class="venta-nombre">${v.productoNombre}</span>
+          <span class="venta-badge ${v.tipo==='debe'?'badge-orange':'badge-blue'}">${v.tipo==='debe'?'💳 DEBE':'✅ VENTA'}</span>
         </div>
-      `;
+        <div class="venta-info">
+          <span>${v.cantidad} pza × $${(v.precioUnitario||0).toFixed(2)}</span>
+          <span>Total: <b>$${(v.total||0).toFixed(2)}</b></span>
+          <span class="ganancia">Ganancia: $${(v.gananciaTotal||0).toFixed(2)}</span>
+        </div>
+        ${v.cliente?`<div class="venta-cliente">👤 ${v.cliente}</div>`:''}
+        <div class="venta-footer">${fs} · ${v.vendedor}</div>
+      </div>`;
     }).join('');
   }
 
-  // ─── DASHBOARD ────────────────────────────────────────────
+  // ── DASHBOARD ─────────────────────────────────────────────────────
   function renderDashboard() {
     const cont = document.getElementById('dashboard-content');
     if (!cont) return;
     const hoy = new Date(); hoy.setHours(0,0,0,0);
-    const ventasHoy = ventas.filter(v => v.fecha?.toDate() >= hoy);
-    const totalVentas = ventasHoy.filter(v => v.tipo === 'venta').reduce((a, v) => a + (v.total || 0), 0);
-    const totalDebes = ventasHoy.filter(v => v.tipo === 'debe').reduce((a, v) => a + (v.total || 0), 0);
-    const totalGanancia = ventasHoy.reduce((a, v) => a + (v.gananciaTotal || 0), 0);
-    const totalCosto = ventasHoy.reduce((a, v) => a + (v.costoTotal || 0), 0);
-    const numVentas = ventasHoy.filter(v => v.tipo === 'venta').length;
-    const numDebes = ventasHoy.filter(v => v.tipo === 'debe').length;
-
-    // top productos
-    const porProducto = {};
-    ventasHoy.forEach(v => {
-      if (!porProducto[v.productoNombre]) porProducto[v.productoNombre] = { total: 0, cantidad: 0 };
-      porProducto[v.productoNombre].total += v.total || 0;
-      porProducto[v.productoNombre].cantidad += v.cantidad || 0;
-    });
-    const top = Object.entries(porProducto).sort((a,b) => b[1].total - a[1].total).slice(0, 5);
-
+    const vh  = ventas.filter(v => v.fecha?.toDate() >= hoy);
+    const tv  = vh.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
+    const td  = vh.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
+    const tg  = vh.reduce((a,v)=>a+(v.gananciaTotal||0),0);
+    const tc  = vh.reduce((a,v)=>a+(v.costoTotal||0),0);
+    const nv  = vh.filter(v=>v.tipo==='venta').length;
+    const nd  = vh.filter(v=>v.tipo==='debe').length;
+    const pp  = {};
+    vh.forEach(v => { if(!pp[v.productoNombre]) pp[v.productoNombre]={total:0,cantidad:0};
+      pp[v.productoNombre].total+=v.total||0; pp[v.productoNombre].cantidad+=v.cantidad||0; });
+    const top = Object.entries(pp).sort((a,b)=>b[1].total-a[1].total).slice(0,5);
     cont.innerHTML = `
       <div class="dash-grid">
         <div class="dash-card accent">
           <div class="dash-label">Ventas del día</div>
-          <div class="dash-value">$${totalVentas.toFixed(2)}</div>
-          <div class="dash-sub">${numVentas} transacciones</div>
+          <div class="dash-value">$${tv.toFixed(2)}</div>
+          <div class="dash-sub">${nv} transacciones</div>
         </div>
         <div class="dash-card">
           <div class="dash-label">Ganancia neta</div>
-          <div class="dash-value green">$${totalGanancia.toFixed(2)}</div>
-          <div class="dash-sub">Costo: $${totalCosto.toFixed(2)}</div>
+          <div class="dash-value green">$${tg.toFixed(2)}</div>
+          <div class="dash-sub">Costo: $${tc.toFixed(2)}</div>
         </div>
         <div class="dash-card">
           <div class="dash-label">Debes pendientes</div>
-          <div class="dash-value orange">$${totalDebes.toFixed(2)}</div>
-          <div class="dash-sub">${numDebes} registros</div>
+          <div class="dash-value orange">$${td.toFixed(2)}</div>
+          <div class="dash-sub">${nd} registros</div>
         </div>
         <div class="dash-card">
           <div class="dash-label">Productos en stock</div>
           <div class="dash-value">${productos.length}</div>
-          <div class="dash-sub">${productos.filter(p => p.stock <= 5).length} con stock bajo</div>
+          <div class="dash-sub">${productos.filter(p=>p.stock<=5).length} con stock bajo</div>
         </div>
       </div>
-      ${top.length ? `
-        <div class="top-section">
-          <div class="section-title">Top productos hoy</div>
-          ${top.map(([nombre, data]) => `
-            <div class="top-row">
-              <span>${nombre}</span>
-              <span>${data.cantidad} pzas · <b>$${data.total.toFixed(2)}</b></span>
-            </div>
-          `).join('')}
-        </div>
-      ` : '<div class="empty-state">Sin ventas hoy todavía</div>'}
-      <button class="btn-excel" onclick="exportarExcel()">📊 Exportar Excel del día</button>
-    `;
+      ${top.length?`<div class="top-section"><div class="section-title">Top productos hoy</div>
+        ${top.map(([n,d])=>`<div class="top-row"><span>${n}</span><span>${d.cantidad} pzas · <b>$${d.total.toFixed(2)}</b></span></div>`).join('')}
+      </div>`:'<div class="empty-state">Sin ventas hoy todavía</div>'}
+      <button class="btn-excel" onclick="exportarExcel()">📊 Exportar Excel del día</button>`;
   }
 
-  // ─── EXCEL ────────────────────────────────────────────────
+  // ── EXCEL ─────────────────────────────────────────────────────────
   window.exportarExcel = () => {
     const hoy = new Date(); hoy.setHours(0,0,0,0);
-    const ventasHoy = ventas.filter(v => v.fecha?.toDate() >= hoy);
-    if (!ventasHoy.length) { showToast('No hay ventas hoy', 'error'); return; }
-
-    const wb = XLSX.utils.book_new();
-
-    // Hoja ventas
-    const wsData = [
-      ['Producto','Cantidad','Precio Unit.','Costo Unit.','Total','Ganancia','Tipo','Cliente','Vendedor','Hora']
-    ];
-    ventasHoy.forEach(v => {
-      wsData.push([
-        v.productoNombre, v.cantidad,
-        v.precioUnitario, v.costoUnitario,
-        v.total, v.gananciaTotal,
-        v.tipo, v.cliente || '',
-        v.vendedor,
-        v.fecha?.toDate().toLocaleTimeString('es-MX')
-      ]);
-    });
-
-    // Totales
-    const totalVentas = ventasHoy.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
-    const totalDebes = ventasHoy.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
-    const totalGanancia = ventasHoy.reduce((a,v)=>a+(v.gananciaTotal||0),0);
-    wsData.push([]);
-    wsData.push(['RESUMEN']);
-    wsData.push(['Total ventas en efectivo', '', '', '', totalVentas.toFixed(2)]);
-    wsData.push(['Total debes', '', '', '', totalDebes.toFixed(2)]);
-    wsData.push(['Ganancia neta', '', '', '', totalGanancia.toFixed(2)]);
-
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-    XLSX.utils.book_append_sheet(wb, ws, 'Ventas');
-
-    // Hoja stock
-    const wsStock = [['Producto','Código','Stock','Costo/pza','Precio Venta','Ganancia/pza']];
-    productos.forEach(p => {
-      wsStock.push([p.nombre, p.codigo||'', p.stock, p.costoPieza?.toFixed(2), p.precioVenta?.toFixed(2), p.ganancia?.toFixed(2)]);
-    });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wsStock), 'Stock');
-
-    const fecha = new Date().toLocaleDateString('es-MX').replace(/\//g,'-');
-    XLSX.writeFile(wb, `ventas-${fecha}.xlsx`);
+    const vh  = ventas.filter(v=>v.fecha?.toDate()>=hoy);
+    if (!vh.length) { showToast('No hay ventas hoy','error'); return; }
+    const wb  = XLSX.utils.book_new();
+    const data= [['Producto','Cantidad','Precio Unit.','Costo Unit.','Total','Ganancia','Tipo','Cliente','Vendedor','Hora']];
+    vh.forEach(v=>data.push([v.productoNombre,v.cantidad,v.precioUnitario,v.costoUnitario,
+      v.total,v.gananciaTotal,v.tipo,v.cliente||'',v.vendedor,v.fecha?.toDate().toLocaleTimeString('es-MX')]));
+    const tv=vh.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
+    const td=vh.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
+    const tg=vh.reduce((a,v)=>a+(v.gananciaTotal||0),0);
+    data.push([],[' RESUMEN'],['Efectivo','','','',tv.toFixed(2)],['Debes','','','',td.toFixed(2)],['Ganancia','','','',tg.toFixed(2)]);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(data),'Ventas');
+    const ws2=[['Producto','Código','Stock','Costo/pza','Precio Venta','Ganancia/pza']];
+    productos.forEach(p=>ws2.push([p.nombre,p.codigo||'',p.stock,(p.costoPieza||0).toFixed(2),(p.precioVenta||0).toFixed(2),(p.ganancia||0).toFixed(2)]));
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(ws2),'Stock');
+    XLSX.writeFile(wb,`ciberplanet-${new Date().toLocaleDateString('es-MX').replace(/\//g,'-')}.xlsx`);
     showToast('Excel descargado ✓');
   };
 
-  // ─── SCANNER ──────────────────────────────────────────────
-  window.toggleScanner = () => {
-    const box = document.getElementById('scanner-box');
-    scannerActive = !scannerActive;
-    if (scannerActive) {
-      box.style.display = 'block';
-      document.getElementById('scanner-input').focus();
-      showToast('Escáner activo — apunta el lector al código');
-    } else {
-      box.style.display = 'none';
+  // ── CÁMARA ────────────────────────────────────────────────────────
+  window.toggleCamera = async () => {
+    if (cameraActive) { stopCamera(); return; }
+    document.getElementById('camera-container').style.display = 'block';
+    document.getElementById('btn-camara').textContent = '⏹ Detener cámara';
+    cameraActive = true;
+    try {
+      // esperar ZXing
+      let tries = 0;
+      while (typeof ZXing === 'undefined' && tries++ < 10) await new Promise(r=>setTimeout(r,300));
+      if (typeof ZXing === 'undefined') throw new Error('ZXing no disponible');
+
+      codeReader = new ZXing.BrowserMultiFormatReader();
+      const devices = await codeReader.listVideoInputDevices();
+      if (!devices.length) throw new Error('Sin cámara');
+      const trasera = devices.find(d=>/back|rear|environment/i.test(d.label));
+      const deviceId = (trasera || devices[devices.length-1]).deviceId;
+
+      await codeReader.decodeFromVideoDevice(deviceId, 'video-preview', (result, err) => {
+        if (result) {
+          const code = result.getText();
+          document.getElementById('p-codigo').value = code;
+          document.getElementById('scan-result-text').textContent = '✓ Código: ' + code;
+          showToast('Escaneado: ' + code);
+          stopCamera();
+        }
+      });
+    } catch(e) {
+      showToast('No se pudo acceder a la cámara', 'error');
+      stopCamera();
     }
   };
 
-  window.onScannerInput = (e) => {
+  function stopCamera() {
+    if (codeReader) { try { codeReader.reset(); } catch(e){} codeReader = null; }
+    cameraActive = false;
+    const c = document.getElementById('camera-container');
+    if (c) c.style.display = 'none';
+    const b = document.getElementById('btn-camara');
+    if (b) b.textContent = '📷 Escanear con cámara';
+  }
+
+  // Lector físico
+  window.onScannerKey = (e) => {
     clearTimeout(barcodeTimeout);
-    barcodeBuffer += e.key !== 'Enter' ? e.key : '';
+    if (e.key !== 'Enter') barcodeBuffer += e.key;
     if (e.key === 'Enter' && barcodeBuffer.length > 2) {
       document.getElementById('p-codigo').value = barcodeBuffer;
-      document.getElementById('scanner-input').value = '';
-      document.getElementById('scanner-result').textContent = '✓ Código: ' + barcodeBuffer;
+      document.getElementById('scan-result-text').textContent = '✓ ' + barcodeBuffer;
+      showToast('Código: ' + barcodeBuffer);
       barcodeBuffer = '';
-      showToast('Código escaneado: ' + document.getElementById('p-codigo').value);
     }
-    barcodeTimeout = setTimeout(() => { barcodeBuffer = ''; }, 100);
+    barcodeTimeout = setTimeout(()=>{ barcodeBuffer=''; }, 150);
   };
 
-  // ─── TOAST ────────────────────────────────────────────────
-  window.showToast = (msg, type = 'ok') => {
+  window.activarLector = () => {
+    document.getElementById('scanner-hidden').focus();
+    showToast('Listo — escanea con el lector físico');
+  };
+
+  // ── PREVIEW ───────────────────────────────────────────────────────
+  window.calcCostoPieza = () => {
+    const total  = parseFloat(document.getElementById('p-costo-total').value)||0;
+    const piezas = parseInt(document.getElementById('p-piezas').value)||1;
+    const precio = parseFloat(document.getElementById('p-precio-venta').value)||0;
+    const cpp = total/piezas, gan = precio-cpp;
+    document.getElementById('costo-pieza-preview').textContent =
+      total&&piezas ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${gan.toFixed(2)}` : '';
+  };
+
+  // ── TOAST ─────────────────────────────────────────────────────────
+  window.showToast = (msg, type='ok') => {
     const t = document.getElementById('toast');
     t.textContent = msg;
-    t.className = 'toast show ' + (type === 'error' ? 'toast-error' : 'toast-ok');
-    setTimeout(() => t.classList.remove('show'), 3000);
+    t.className   = 'toast show '+(type==='error'?'toast-error':'toast-ok');
+    setTimeout(()=>t.classList.remove('show'), 3000);
   };
 
-  // filtros reactivos
-  setTimeout(() => {
+  setTimeout(()=>{
     document.getElementById('stock-search')?.addEventListener('input', renderStock);
     document.getElementById('ventas-filtro')?.addEventListener('change', renderVentas);
-  }, 500);
-
-  // calcular costo por pieza en tiempo real
-  window.calcCostoPieza = () => {
-    const total = parseFloat(document.getElementById('p-costo-total').value) || 0;
-    const piezas = parseInt(document.getElementById('p-piezas').value) || 1;
-    const precio = parseFloat(document.getElementById('p-precio-venta').value) || 0;
-    const cpp = total / piezas;
-    const gan = precio - cpp;
-    document.getElementById('costo-pieza-preview').textContent =
-      total && piezas ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${gan.toFixed(2)}` : '';
-  };
+  }, 600);
 </script>
 
 <style>
-  :root {
-    --bg: #0f0f13;
-    --surface: #1a1a22;
-    --surface2: #22222e;
-    --border: #2e2e3e;
-    --accent: #f5c842;
-    --accent2: #ff6b35;
-    --green: #3ddc84;
-    --orange: #ff9f43;
-    --red: #ff4d6d;
-    --blue: #4ecdc4;
-    --text: #f0f0f5;
-    --muted: #8888aa;
-    --radius: 14px;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+:root{--bg:#0f0f13;--surface:#1a1a22;--surface2:#22222e;--border:#2e2e3e;--accent:#f5c842;--green:#3ddc84;--orange:#ff9f43;--red:#ff4d6d;--blue:#4ecdc4;--text:#f0f0f5;--muted:#8888aa;--radius:14px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
 
-  /* ── LOGIN ── */
-  #login-screen {
-    min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    background: radial-gradient(ellipse at 30% 20%, #1a1200 0%, #0f0f13 60%);
-  }
-  .login-box {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 24px; padding: 48px 40px; width: 100%; max-width: 400px;
-    box-shadow: 0 40px 80px rgba(0,0,0,0.6);
-  }
-  .login-logo { font-family: 'Syne', sans-serif; font-size: 2rem; font-weight: 800; color: var(--accent); margin-bottom: 4px; }
-  .login-sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 36px; }
-  .login-box label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.05em; text-transform: uppercase; }
-  .login-box input {
-    width: 100%; background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 10px; padding: 12px 16px; color: var(--text); font-size: 1rem;
-    margin-bottom: 18px; outline: none; transition: border-color 0.2s;
-  }
-  .login-box input:focus { border-color: var(--accent); }
-  .login-btn {
-    width: 100%; background: var(--accent); color: #000; font-family: 'Syne', sans-serif;
-    font-weight: 700; font-size: 1rem; padding: 14px; border: none; border-radius: 10px;
-    cursor: pointer; transition: opacity 0.2s;
-  }
-  .login-btn:hover { opacity: 0.9; }
-  .login-error { color: var(--red); font-size: 0.85rem; margin-top: 12px; text-align: center; }
+/* LOGIN */
+#login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 30% 20%,#1a1200,#0f0f13 60%);padding:16px}
+.login-box{background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:40px 28px;width:100%;max-width:400px;box-shadow:0 40px 80px rgba(0,0,0,.6)}
+.login-logo{font-family:'Syne',sans-serif;font-size:1.8rem;font-weight:800;color:var(--accent);margin-bottom:4px;display:flex;align-items:center;gap:10px}
+.login-sub{color:var(--muted);font-size:.87rem;margin-bottom:30px}
+.login-box label{display:block;font-size:.72rem;color:var(--muted);margin-bottom:5px;letter-spacing:.06em;text-transform:uppercase}
+.login-box input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:1rem;margin-bottom:14px;outline:none;transition:border-color .2s;font-family:'DM Sans',sans-serif}
+.login-box input:focus{border-color:var(--accent)}
+.login-btn{width:100%;background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:1rem;padding:14px;border:none;border-radius:10px;cursor:pointer;transition:opacity .2s}
+.login-btn:hover{opacity:.9}
+.login-error{color:var(--red);font-size:.83rem;margin-top:10px;text-align:center}
 
-  /* ── APP ── */
-  #app-screen { display: none; flex-direction: column; min-height: 100vh; }
-  .topbar {
-    background: var(--surface); border-bottom: 1px solid var(--border);
-    padding: 14px 20px; display: flex; align-items: center; justify-content: space-between;
-    position: sticky; top: 0; z-index: 100;
-  }
-  .topbar-logo { font-family: 'Syne', sans-serif; font-weight: 800; color: var(--accent); font-size: 1.2rem; }
-  .topbar-right { display: flex; align-items: center; gap: 12px; }
-  #user-email { font-size: 0.8rem; color: var(--muted); }
-  .logout-btn {
-    background: transparent; border: 1px solid var(--border); color: var(--muted);
-    padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s;
-  }
-  .logout-btn:hover { border-color: var(--red); color: var(--red); }
+/* APP */
+#app-screen{display:none;flex-direction:column;min-height:100vh}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.topbar-logo{font-family:'Syne',sans-serif;font-weight:800;color:var(--accent);font-size:1.1rem;display:flex;align-items:center;gap:8px}
+.topbar-right{display:flex;align-items:center;gap:10px}
+#user-email{font-size:.72rem;color:var(--muted);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.logout-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:.76rem;transition:all .2s}
+.logout-btn:hover{border-color:var(--red);color:var(--red)}
 
-  /* ── NAV ── */
-  .bottom-nav {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    background: var(--surface); border-top: 1px solid var(--border);
-    display: flex; z-index: 100;
-  }
-  .nav-btn {
-    flex: 1; background: none; border: none; color: var(--muted);
-    padding: 12px 4px; font-size: 0.7rem; cursor: pointer;
-    display: flex; flex-direction: column; align-items: center; gap: 4px;
-    transition: color 0.2s; font-family: 'DM Sans', sans-serif;
-  }
-  .nav-btn .icon { font-size: 1.4rem; }
-  .nav-btn.active { color: var(--accent); }
+/* NAV */
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);display:flex;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
+.nav-btn{flex:1;background:none;border:none;color:var(--muted);padding:10px 4px;font-size:.66rem;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;transition:color .2s;font-family:'DM Sans',sans-serif}
+.nav-btn .icon{font-size:1.3rem}
+.nav-btn.active{color:var(--accent)}
 
-  /* ── CONTENT ── */
-  .content { padding: 20px 16px 90px; max-width: 700px; margin: 0 auto; width: 100%; }
-  .tab-content { display: none; }
-  .tab-content.active { display: block; }
-  .page-title { font-family: 'Syne', sans-serif; font-size: 1.5rem; font-weight: 700; margin-bottom: 20px; }
+/* CONTENT */
+.content{padding:16px 14px 88px;max-width:680px;margin:0 auto;width:100%}
+.tab-content{display:none}
+.tab-content.active{display:block;animation:fadeIn .2s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.page-title{font-family:'Syne',sans-serif;font-size:1.35rem;font-weight:700;margin-bottom:16px}
 
-  /* ── FORM ── */
-  .card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
-  }
-  .card-title { font-family: 'Syne', sans-serif; font-weight: 700; margin-bottom: 16px; font-size: 1rem; color: var(--accent); }
-  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .form-full { grid-column: 1 / -1; }
-  .form-group { display: flex; flex-direction: column; gap: 6px; }
-  .form-group label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-  .form-group input, .form-group select {
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 10px; padding: 11px 14px; color: var(--text);
-    font-size: 0.95rem; outline: none; transition: border-color 0.2s;
-    font-family: 'DM Sans', sans-serif;
-  }
-  .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
-  .form-group select option { background: var(--surface2); }
-  .preview-text { font-size: 0.85rem; color: var(--green); margin-top: 4px; font-weight: 500; min-height: 20px; }
+/* CARD FORM */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:14px}
+.card-title{font-family:'Syne',sans-serif;font-weight:700;margin-bottom:14px;font-size:.93rem;color:var(--accent)}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-full{grid-column:1/-1}
+.form-group{display:flex;flex-direction:column;gap:5px}
+.form-group label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.form-group input,.form-group select{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;color:var(--text);font-size:.94rem;outline:none;transition:border-color .2s;font-family:'DM Sans',sans-serif;width:100%}
+.form-group input:focus,.form-group select:focus{border-color:var(--accent)}
+.form-group select option{background:var(--surface2)}
+.preview-text{font-size:.82rem;color:var(--green);min-height:18px;font-weight:500}
+.btn-primary{width:100%;background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:.93rem;padding:13px;border:none;border-radius:10px;cursor:pointer;margin-top:10px;transition:opacity .2s}
+.btn-primary:hover{opacity:.9}
 
-  .btn-primary {
-    background: var(--accent); color: #000; font-family: 'Syne', sans-serif;
-    font-weight: 700; padding: 13px 24px; border: none; border-radius: 10px;
-    cursor: pointer; font-size: 0.95rem; width: 100%; margin-top: 8px; transition: opacity 0.2s;
-  }
-  .btn-primary:hover { opacity: 0.9; }
-  .btn-scanner {
-    background: var(--surface2); border: 1px dashed var(--accent);
-    color: var(--accent); padding: 10px; border-radius: 10px;
-    cursor: pointer; font-size: 0.85rem; width: 100%; transition: background 0.2s;
-  }
-  .btn-scanner:hover { background: rgba(245,200,66,0.1); }
+/* SCANNER */
+.scanner-section{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.scan-btn-row{display:flex;gap:8px}
+.btn-scan{flex:1;background:var(--surface2);border:1px dashed var(--accent);color:var(--accent);padding:10px 8px;border-radius:10px;cursor:pointer;font-size:.82rem;transition:background .2s;text-align:center;font-family:'DM Sans',sans-serif}
+.btn-scan:hover{background:rgba(245,200,66,.1)}
+#camera-container{display:none;background:#000;border-radius:12px;overflow:hidden;position:relative;width:100%;aspect-ratio:4/3;max-height:260px}
+#video-preview{width:100%;height:100%;object-fit:cover;display:block}
+.camera-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.camera-frame{width:70%;max-width:220px;height:100px;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.45)}
+.scan-result{font-size:.86rem;color:var(--green);font-weight:500;min-height:20px}
+.scanner-hidden-input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
 
-  /* ── SCANNER BOX ── */
-  .scanner-box {
-    display: none; background: var(--surface2); border: 1px solid var(--accent);
-    border-radius: 10px; padding: 14px; margin-top: 8px;
-  }
-  .scanner-box p { font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; }
-  .scanner-input {
-    background: transparent; border: none; outline: none;
-    color: transparent; caret-color: transparent; width: 1px; height: 1px;
-    position: absolute;
-  }
-  #scanner-result { font-size: 0.9rem; color: var(--green); font-weight: 500; }
+/* STOCK */
+.search-bar{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:.92rem;outline:none;width:100%;margin-bottom:14px;font-family:'DM Sans',sans-serif}
+.search-bar:focus{border-color:var(--accent)}
+.stock-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px}
+.stock-card.low-stock{border-color:rgba(255,77,109,.4)}
+.stock-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+.stock-name{font-family:'Syne',sans-serif;font-weight:700;font-size:.96rem}
+.stock-code{font-size:.73rem;color:var(--muted);margin-top:2px}
+.stock-badge{padding:4px 12px;border-radius:20px;font-size:.76rem;font-weight:700}
+.badge-green{background:rgba(61,220,132,.15);color:var(--green)}
+.badge-red{background:rgba(255,77,109,.15);color:var(--red)}
+.badge-blue{background:rgba(78,205,196,.15);color:var(--blue)}
+.badge-orange{background:rgba(255,159,67,.15);color:var(--orange)}
+.stock-info{display:flex;gap:12px;font-size:.8rem;color:var(--muted);margin-bottom:10px;flex-wrap:wrap}
+.stock-info .ganancia{color:var(--green)}
+.stock-actions{display:flex;gap:8px}
+.btn-icon{background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 14px;cursor:pointer;font-size:1rem;transition:all .2s}
+.btn-icon:hover{border-color:var(--accent);color:var(--accent)}
+.btn-icon.btn-danger:hover{border-color:var(--red);color:var(--red)}
 
-  /* ── STOCK ── */
-  .search-bar {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 12px 16px; color: var(--text);
-    font-size: 0.95rem; outline: none; width: 100%; margin-bottom: 16px;
-    font-family: 'DM Sans', sans-serif;
-  }
-  .search-bar:focus { border-color: var(--accent); }
-  .stock-card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
-    transition: border-color 0.2s;
-  }
-  .stock-card.low-stock { border-color: rgba(255,77,109,0.4); }
-  .stock-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
-  .stock-name { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 1rem; }
-  .stock-code { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
-  .stock-badge { padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 700; }
-  .badge-green { background: rgba(61,220,132,0.15); color: var(--green); }
-  .badge-red { background: rgba(255,77,109,0.15); color: var(--red); }
-  .badge-blue { background: rgba(78,205,196,0.15); color: var(--blue); }
-  .badge-orange { background: rgba(255,159,67,0.15); color: var(--orange); }
-  .stock-info { display: flex; gap: 16px; font-size: 0.85rem; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
-  .stock-info .ganancia { color: var(--green); }
-  .stock-actions { display: flex; gap: 8px; }
-  .btn-icon {
-    background: var(--surface2); border: 1px solid var(--border);
-    color: var(--text); border-radius: 8px; padding: 6px 14px;
-    cursor: pointer; font-size: 1rem; transition: all 0.2s;
-  }
-  .btn-icon:hover { border-color: var(--accent); color: var(--accent); }
-  .btn-icon.btn-danger:hover { border-color: var(--red); color: var(--red); }
+/* VENTAS */
+.filtro-select{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;margin-bottom:14px;width:100%;font-family:'DM Sans',sans-serif}
+.venta-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:9px}
+.venta-card.venta-debe{border-left:3px solid var(--orange)}
+.venta-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
+.venta-nombre{font-family:'Syne',sans-serif;font-weight:700}
+.venta-badge{padding:3px 10px;border-radius:20px;font-size:.74rem;font-weight:700}
+.venta-info{display:flex;gap:12px;font-size:.8rem;color:var(--muted);flex-wrap:wrap;margin-bottom:5px}
+.venta-info .ganancia{color:var(--green)}
+.venta-cliente{font-size:.78rem;color:var(--blue);margin-bottom:4px}
+.venta-footer{font-size:.7rem;color:var(--muted)}
 
-  /* ── VENTAS ── */
-  .filtro-select {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 10px 14px; color: var(--text);
-    font-size: 0.9rem; outline: none; margin-bottom: 16px; width: 100%;
-    font-family: 'DM Sans', sans-serif;
-  }
-  .venta-card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 16px; margin-bottom: 10px;
-  }
-  .venta-card.venta-debe { border-left: 3px solid var(--orange); }
-  .venta-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .venta-nombre { font-family: 'Syne', sans-serif; font-weight: 700; }
-  .venta-info { display: flex; gap: 14px; font-size: 0.85rem; color: var(--muted); flex-wrap: wrap; margin-bottom: 6px; }
-  .venta-info .ganancia { color: var(--green); }
-  .venta-cliente { font-size: 0.82rem; color: var(--blue); margin-bottom: 4px; }
-  .venta-footer { font-size: 0.75rem; color: var(--muted); }
+/* DASHBOARD */
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.dash-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+.dash-card.accent{border-color:rgba(245,200,66,.4);background:rgba(245,200,66,.05)}
+.dash-label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px}
+.dash-value{font-family:'Syne',sans-serif;font-size:1.4rem;font-weight:800;margin-bottom:3px}
+.dash-value.green{color:var(--green)}
+.dash-value.orange{color:var(--orange)}
+.dash-sub{font-size:.72rem;color:var(--muted)}
+.top-section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px}
+.section-title{font-family:'Syne',sans-serif;font-weight:700;margin-bottom:12px;font-size:.9rem}
+.top-row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:.83rem}
+.top-row:last-child{border-bottom:none}
+.btn-excel{width:100%;background:rgba(61,220,132,.1);border:1px solid var(--green);color:var(--green);font-family:'Syne',sans-serif;font-weight:700;padding:13px;border-radius:10px;cursor:pointer;font-size:.91rem;transition:background .2s}
+.btn-excel:hover{background:rgba(61,220,132,.2)}
 
-  /* ── DASHBOARD ── */
-  .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-  .dash-card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 18px;
-  }
-  .dash-card.accent { border-color: rgba(245,200,66,0.4); background: rgba(245,200,66,0.05); }
-  .dash-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
-  .dash-value { font-family: 'Syne', sans-serif; font-size: 1.5rem; font-weight: 800; margin-bottom: 4px; }
-  .dash-value.green { color: var(--green); }
-  .dash-value.orange { color: var(--orange); }
-  .dash-sub { font-size: 0.78rem; color: var(--muted); }
-  .top-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
-  .section-title { font-family: 'Syne', sans-serif; font-weight: 700; margin-bottom: 14px; font-size: 0.95rem; }
-  .top-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.88rem; }
-  .top-row:last-child { border-bottom: none; }
-  .btn-excel {
-    width: 100%; background: rgba(61,220,132,0.1); border: 1px solid var(--green);
-    color: var(--green); font-family: 'Syne', sans-serif; font-weight: 700;
-    padding: 14px; border-radius: 10px; cursor: pointer; font-size: 0.95rem;
-    transition: background 0.2s;
-  }
-  .btn-excel:hover { background: rgba(61,220,132,0.2); }
+/* MISC */
+.empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:.87rem}
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);padding:11px 22px;border-radius:10px;font-size:.87rem;font-weight:500;opacity:0;transition:all .3s;z-index:999;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast-ok{background:var(--green);color:#000}
+.toast-error{background:var(--red);color:#fff}
 
-  /* ── UTILS ── */
-  .empty-state { text-align: center; color: var(--muted); padding: 40px 0; font-size: 0.9rem; }
-  .toast {
-    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(20px);
-    padding: 12px 24px; border-radius: 10px; font-size: 0.9rem; font-weight: 500;
-    opacity: 0; transition: all 0.3s; z-index: 999; pointer-events: none; white-space: nowrap;
-  }
-  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-  .toast-ok { background: var(--green); color: #000; }
-  .toast-error { background: var(--red); color: #fff; }
-
-  @media (max-width: 400px) {
-    .form-grid { grid-template-columns: 1fr; }
-    .dash-grid { grid-template-columns: 1fr; }
-    .stock-info { gap: 8px; }
-  }
+@media(max-width:420px){.form-grid{grid-template-columns:1fr}.dash-grid{grid-template-columns:1fr}.scan-btn-row{flex-direction:column}}
 </style>
 </head>
 <body>
 
-<!-- ══ LOGIN ══════════════════════════════════════════════ -->
+<!-- LOGIN -->
 <div id="login-screen">
   <div class="login-box">
-    <div class="login-logo">🍬 DulceControl</div>
+    <div class="login-logo">🌐 CiberPlanet</div>
     <div class="login-sub">Sistema de stock y ventas</div>
     <label>Correo electrónico</label>
-    <input type="email" id="login-email" placeholder="tu@correo.com"/>
+    <input type="email" id="login-email" placeholder="tu@correo.com" autocomplete="email"/>
     <label>Contraseña</label>
-    <input type="password" id="login-pass" placeholder="••••••••"
+    <input type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password"
       onkeydown="if(event.key==='Enter') doLogin()"/>
     <button class="login-btn" id="login-btn" onclick="doLogin()">Entrar</button>
     <div id="login-error" class="login-error"></div>
   </div>
 </div>
 
-<!-- ══ APP ════════════════════════════════════════════════ -->
+<!-- APP -->
 <div id="app-screen">
   <div class="topbar">
-    <div class="topbar-logo">🍬 DulceControl</div>
+    <div class="topbar-logo">🌐 CiberPlanet</div>
     <div class="topbar-right">
       <span id="user-email"></span>
       <button class="logout-btn" onclick="doLogout()">Salir</button>
@@ -686,50 +535,54 @@
 
   <div class="content">
 
-    <!-- ── DASHBOARD ── -->
+    <!-- DASHBOARD -->
     <div class="tab-content active" id="tab-dashboard">
       <div class="page-title">📊 Resumen del día</div>
       <div id="dashboard-content"><div class="empty-state">Cargando...</div></div>
     </div>
 
-    <!-- ── AGREGAR PRODUCTO ── -->
+    <!-- AGREGAR -->
     <div class="tab-content" id="tab-agregar">
       <div class="page-title">📦 Agregar producto</div>
       <div class="card">
         <div class="card-title">Datos del producto</div>
         <div class="form-grid">
           <div class="form-group form-full">
-            <label>Nombre del producto</label>
+            <label>Nombre del producto *</label>
             <input type="text" id="p-nombre" placeholder="Ej: Pulparindo"/>
           </div>
           <div class="form-group form-full">
             <label>Código de barras</label>
-            <input type="text" id="p-codigo" placeholder="Escanea o escribe manualmente"/>
-            <button class="btn-scanner" onclick="toggleScanner()">📷 Activar escáner (lector físico o cámara)</button>
-            <div class="scanner-box" id="scanner-box">
-              <p>Apunta el lector de código de barras — el código se capturará automáticamente.</p>
-              <input class="scanner-input" id="scanner-input" onkeydown="onScannerInput(event)" autofocus/>
-              <div id="scanner-result"></div>
+            <input type="text" id="p-codigo" placeholder="Escribe o escanea"/>
+            <div class="scanner-section">
+              <div class="scan-btn-row">
+                <button class="btn-scan" id="btn-camara" onclick="toggleCamera()">📷 Escanear con cámara</button>
+                <button class="btn-scan" onclick="activarLector()">🔫 Lector físico</button>
+              </div>
+              <div id="camera-container">
+                <video id="video-preview" autoplay playsinline muted></video>
+                <div class="camera-overlay"><div class="camera-frame"></div></div>
+              </div>
+              <div class="scan-result" id="scan-result-text"></div>
             </div>
+            <input class="scanner-hidden-input" id="scanner-hidden"
+              onkeydown="onScannerKey(event)" autocomplete="off" tabindex="-1"/>
           </div>
           <div class="form-group">
-            <label>Costo total del lote ($)</label>
-            <input type="number" id="p-costo-total" placeholder="Ej: 50.00" step="0.01"
-              oninput="calcCostoPieza()"/>
+            <label>Costo total lote ($) *</label>
+            <input type="number" id="p-costo-total" placeholder="50.00" step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
           </div>
           <div class="form-group">
-            <label>Piezas en el lote</label>
-            <input type="number" id="p-piezas" placeholder="Ej: 25" min="1"
-              oninput="calcCostoPieza()"/>
+            <label>Piezas en el lote *</label>
+            <input type="number" id="p-piezas" placeholder="25" min="1" inputmode="numeric" oninput="calcCostoPieza()"/>
           </div>
           <div class="form-group">
-            <label>Precio de venta por pieza ($)</label>
-            <input type="number" id="p-precio-venta" placeholder="Ej: 3.00" step="0.01"
-              oninput="calcCostoPieza()"/>
+            <label>Precio venta/pza ($) *</label>
+            <input type="number" id="p-precio-venta" placeholder="3.00" step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
           </div>
           <div class="form-group">
-            <label>Piezas en stock ahora</label>
-            <input type="number" id="p-stock" placeholder="Ej: 25" min="0"/>
+            <label>Stock actual (pzas) *</label>
+            <input type="number" id="p-stock" placeholder="25" min="0" inputmode="numeric"/>
           </div>
           <div class="form-group form-full">
             <div class="preview-text" id="costo-pieza-preview"></div>
@@ -739,14 +592,14 @@
       </div>
     </div>
 
-    <!-- ── STOCK ── -->
+    <!-- STOCK -->
     <div class="tab-content" id="tab-stock">
       <div class="page-title">🏪 Stock actual</div>
       <input class="search-bar" id="stock-search" placeholder="🔍 Buscar producto o código..."/>
       <div id="stock-list"><div class="empty-state">Cargando...</div></div>
     </div>
 
-    <!-- ── VENTAS ── -->
+    <!-- VENTAS -->
     <div class="tab-content" id="tab-ventas">
       <div class="page-title">💰 Registrar venta</div>
       <div class="card">
@@ -760,29 +613,27 @@
           </div>
           <div class="form-group">
             <label>Cantidad</label>
-            <input type="number" id="venta-cantidad" value="1" min="1"/>
+            <input type="number" id="venta-cantidad" value="1" min="1" inputmode="numeric"/>
           </div>
           <div class="form-group">
             <label>Precio unitario ($)</label>
-            <input type="number" id="venta-precio" placeholder="Auto" step="0.01" readonly
-              style="opacity:0.6"/>
+            <input type="number" id="venta-precio" placeholder="Auto" step="0.01" readonly style="opacity:.6"/>
           </div>
           <div class="form-group form-full">
             <label>Tipo</label>
             <select id="venta-tipo">
-              <option value="venta">✅ Venta (pago en efectivo)</option>
-              <option value="debe">💳 Debe (pago pendiente)</option>
+              <option value="venta">✅ Venta — pago en efectivo</option>
+              <option value="debe">💳 Debe — pago pendiente</option>
             </select>
           </div>
           <div class="form-group form-full">
-            <label>Nombre del cliente (opcional)</label>
-            <input type="text" id="venta-cliente" placeholder="Ej: Juan — útil para debes"/>
+            <label>Nombre del cliente (recomendado para debes)</label>
+            <input type="text" id="venta-cliente" placeholder="Ej: Juan García"/>
           </div>
         </div>
         <button class="btn-primary" onclick="registrarVenta()">Registrar</button>
       </div>
-
-      <div class="page-title" style="margin-top:24px">Historial</div>
+      <div class="page-title" style="margin-top:18px">Historial</div>
       <select class="filtro-select" id="ventas-filtro">
         <option value="hoy">Hoy</option>
         <option value="semana">Últimos 7 días</option>
@@ -793,7 +644,6 @@
 
   </div><!-- /content -->
 
-  <!-- ── BOTTOM NAV ── -->
   <nav class="bottom-nav">
     <button class="nav-btn active" data-tab="dashboard" onclick="showTab('dashboard')">
       <span class="icon">📊</span>Resumen
@@ -811,6 +661,5 @@
 </div>
 
 <div id="toast" class="toast"></div>
-
 </body>
 </html>
