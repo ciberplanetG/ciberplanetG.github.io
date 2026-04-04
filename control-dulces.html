@@ -411,10 +411,15 @@
     filtered.map(v => {
       const f = v.fecha?.toDate();
       const fs= f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
+      const esOwner = currentUser && currentUser.email === OWNER_EMAIL;
+      const btnDel  = esOwner ? `<button class="btn-del-venta" onclick="solicitarEliminarVenta('${v.id}','${v.productoNombre.replace(/'/g,"\\'")}')">🗑</button>` : '';
       return `<div class="venta-card ${v.tipo==='debe'?'venta-debe':''}">
         <div class="venta-header">
           <span class="venta-nombre">${v.productoNombre}</span>
-          <span class="venta-badge ${v.tipo==='debe'?'badge-orange':'badge-blue'}">${v.tipo==='debe'?'💳 DEBE':'✅ VENTA'}</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="venta-badge ${v.tipo==='debe'?'badge-orange':'badge-blue'}">${v.tipo==='debe'?'💳 DEBE':'✅ VENTA'}</span>
+            ${btnDel}
+          </div>
         </div>
         <div class="venta-info">
           <span>${v.cantidad} pza × $${(v.precioUnitario||0).toFixed(2)}</span>
@@ -564,6 +569,43 @@
     const cpp = total/piezas, gan = precio-cpp;
     document.getElementById('costo-pieza-preview').textContent =
       total&&piezas ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${gan.toFixed(2)}` : '';
+  };
+
+  // ── ELIMINAR VENTA (solo dueño) ───────────────────────────────────
+  const OWNER_EMAIL = 'giioniceman@gmail.com';
+  const DELETE_PIN  = '25252250';
+
+  window.solicitarEliminarVenta = (id, nombre) => {
+    if (!currentUser || currentUser.email !== OWNER_EMAIL) return;
+    // Guardamos el id a eliminar en el modal
+    document.getElementById('pin-venta-id').value   = id;
+    document.getElementById('pin-venta-nombre').textContent = nombre;
+    document.getElementById('pin-input').value      = '';
+    document.getElementById('pin-error').textContent = '';
+    document.getElementById('pin-modal').style.display = 'flex';
+    setTimeout(() => document.getElementById('pin-input').focus(), 100);
+  };
+
+  window.cerrarPinModal = () => {
+    document.getElementById('pin-modal').style.display = 'none';
+  };
+
+  window.confirmarEliminarVenta = async () => {
+    const pin = document.getElementById('pin-input').value.trim();
+    if (pin !== DELETE_PIN) {
+      document.getElementById('pin-error').textContent = '❌ PIN incorrecto';
+      document.getElementById('pin-input').value = '';
+      document.getElementById('pin-input').focus();
+      return;
+    }
+    const id = document.getElementById('pin-venta-id').value;
+    try {
+      await deleteDoc(doc(db, 'ventas', id));
+      cerrarPinModal();
+      showToast('Venta eliminada ✓');
+    } catch(e) {
+      showToast('Error al eliminar', 'error');
+    }
   };
 
   // ── CONEXIÓN ──────────────────────────────────────────────────────
@@ -726,6 +768,24 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .diag-ok{color:var(--green);background:rgba(61,220,132,.08)}
 .diag-warn{color:var(--orange);background:rgba(255,159,67,.08)}
 .diag-error{color:var(--red);background:rgba(255,77,109,.08)}
+
+/* PIN MODAL */
+.pin-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:999;padding:16px}
+.pin-modal{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:28px 24px;width:100%;max-width:340px;box-shadow:0 30px 60px rgba(0,0,0,.6)}
+.pin-modal-title{font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem;margin-bottom:4px;color:var(--accent)}
+.pin-modal-sub{font-size:.82rem;color:var(--muted);margin-bottom:20px}
+.pin-modal-sub b{color:var(--text)}
+.pin-input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:13px 14px;color:var(--text);font-size:1.2rem;outline:none;letter-spacing:.3em;text-align:center;font-family:'DM Sans',sans-serif;transition:border-color .2s;margin-bottom:8px}
+.pin-input:focus{border-color:var(--accent)}
+.pin-error{color:var(--red);font-size:.82rem;min-height:18px;text-align:center;margin-bottom:12px}
+.pin-btn-row{display:flex;gap:10px}
+.pin-btn-cancel{flex:1;background:transparent;border:1px solid var(--border);color:var(--muted);padding:12px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:.9rem;transition:all .2s}
+.pin-btn-cancel:hover{border-color:var(--red);color:var(--red)}
+.pin-btn-confirm{flex:1;background:var(--red);color:#fff;border:none;padding:12px;border-radius:10px;cursor:pointer;font-family:'Syne',sans-serif;font-weight:700;font-size:.9rem;transition:opacity .2s}
+.pin-btn-confirm:hover{opacity:.85}
+/* Botón eliminar venta */
+.btn-del-venta{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:1rem;padding:2px 4px;border-radius:6px;transition:color .2s;line-height:1}
+.btn-del-venta:hover{color:var(--red)}
 
 @media(max-width:420px){.form-grid{grid-template-columns:1fr}.dash-grid{grid-template-columns:1fr}.scan-btn-row{flex-direction:column}}
 </style>
@@ -912,6 +972,23 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <span class="icon">💰</span>Ventas
     </button>
   </nav>
+</div>
+
+<!-- PIN MODAL — solo visible para el dueño -->
+<div id="pin-modal" class="pin-modal-overlay" onclick="if(event.target===this)cerrarPinModal()">
+  <div class="pin-modal">
+    <div class="pin-modal-title">🔐 Confirmar eliminación</div>
+    <div class="pin-modal-sub">Eliminar venta de: <b id="pin-venta-nombre"></b></div>
+    <input type="hidden" id="pin-venta-id"/>
+    <input class="pin-input" id="pin-input" type="password" inputmode="numeric"
+      maxlength="8" placeholder="••••••••"
+      onkeydown="if(event.key==='Enter') confirmarEliminarVenta()"/>
+    <div class="pin-error" id="pin-error"></div>
+    <div class="pin-btn-row">
+      <button class="pin-btn-cancel" onclick="cerrarPinModal()">Cancelar</button>
+      <button class="pin-btn-confirm" onclick="confirmarEliminarVenta()">Eliminar</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast" class="toast"></div>
