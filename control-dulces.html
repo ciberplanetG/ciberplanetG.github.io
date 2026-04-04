@@ -91,6 +91,10 @@
   let currentUser  = null;
   let productos    = [];
   let ventas       = [];
+
+  // ── PERMISOS ─────────────────────────────────────────────────────
+  const OWNER_EMAIL = 'giioniceman@gmail.com';
+  const DELETE_PIN  = '25252250';
   // Cámara — sección Agregar
   let barcodeBuffer  = "";
   let barcodeTimeout = null;
@@ -602,8 +606,6 @@
   };
 
   // ── ELIMINAR VENTA (solo dueño) ───────────────────────────────────
-  const OWNER_EMAIL = 'giioniceman@gmail.com';
-  const DELETE_PIN  = '25252250';
 
   window.solicitarEliminarVenta = (id, nombre) => {
     if (!currentUser || currentUser.email !== OWNER_EMAIL) return;
