@@ -258,6 +258,72 @@
     });
   }
 
+  // ── Estado del formulario de agregar ─────────────────────────────
+  let productoEncontrado = null; // producto existente detectado
+
+  function limpiarFormAgregar() {
+    ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock','p-piezas-extra'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    document.getElementById('costo-pieza-preview').textContent = '';
+    document.getElementById('scan-result-text').textContent    = '';
+    productoEncontrado = null;
+    mostrarModoFormulario('nuevo');
+    scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+  }
+
+  // Cambia entre modo "nuevo producto" y modo "producto encontrado"
+  function mostrarModoFormulario(modo) {
+    const secNuevo     = document.getElementById('form-nuevo-producto');
+    const secExistente = document.getElementById('form-producto-existente');
+    if (modo === 'existente') {
+      secNuevo.style.display     = 'none';
+      secExistente.style.display = 'block';
+    } else {
+      secNuevo.style.display     = 'block';
+      secExistente.style.display = 'none';
+    }
+  }
+
+  // Verifica si el código/nombre ya existe al escribir o escanear
+  function verificarExistencia() {
+    const codigo = document.getElementById('p-codigo').value.trim();
+    const nombre = document.getElementById('p-nombre').value.trim();
+    const existe = productos.find(p => {
+      const mismoCodigo = codigo && p.codigo && p.codigo.trim() === codigo;
+      const mismoNombre = nombre && p.nombre.toLowerCase() === nombre.toLowerCase();
+      return mismoCodigo || mismoNombre;
+    });
+    if (existe) {
+      productoEncontrado = existe;
+      document.getElementById('encontrado-nombre').textContent  = existe.nombre;
+      document.getElementById('encontrado-codigo').textContent  = existe.codigo || 'Sin código';
+      document.getElementById('encontrado-stock').textContent   = existe.stock || 0;
+      document.getElementById('encontrado-precio').textContent  = '$' + (existe.precioVenta||0).toFixed(2);
+      document.getElementById('p-piezas-extra').value           = '';
+      mostrarModoFormulario('existente');
+    } else {
+      productoEncontrado = null;
+      mostrarModoFormulario('nuevo');
+    }
+  }
+  window.verificarExistencia = verificarExistencia;
+
+  // Confirmar agregar piezas a producto existente
+  window.confirmarAgregarStock = async () => {
+    if (!productoEncontrado) return;
+    const extra = parseInt(document.getElementById('p-piezas-extra').value);
+    if (!extra || extra <= 0) { showToast('Escribe cuántas piezas vas a agregar', 'error'); return; }
+    const nuevoStock = (productoEncontrado.stock || 0) + extra;
+    await updateDoc(doc(db, 'productos', productoEncontrado.id), { stock: nuevoStock });
+    showToast(`✓ ${productoEncontrado.nombre}: ${productoEncontrado.stock} + ${extra} = ${nuevoStock} pzas`);
+    limpiarFormAgregar();
+  };
+
+  window.cancelarExistente = () => {
+    limpiarFormAgregar();
+  };
+
   window.agregarProducto = async () => {
     const nombre      = document.getElementById('p-nombre').value.trim();
     const codigo      = document.getElementById('p-codigo').value.trim();
@@ -268,47 +334,31 @@
     if (!nombre || !costoTotal || !piezas || !precioVenta || isNaN(stock)) {
       showToast('Llena todos los campos obligatorios', 'error'); return;
     }
+    // Doble check por si escribe sin escanear
+    const existe = productos.find(p => {
+      const mismoCodigo = codigo && p.codigo && p.codigo.trim() === codigo;
+      const mismoNombre = p.nombre.toLowerCase() === nombre.toLowerCase();
+      return mismoCodigo || mismoNombre;
+    });
+    if (existe) {
+      productoEncontrado = existe;
+      document.getElementById('encontrado-nombre').textContent  = existe.nombre;
+      document.getElementById('encontrado-codigo').textContent  = existe.codigo || 'Sin código';
+      document.getElementById('encontrado-stock').textContent   = existe.stock || 0;
+      document.getElementById('encontrado-precio').textContent  = '$' + (existe.precioVenta||0).toFixed(2);
+      document.getElementById('p-piezas-extra').value           = stock || '';
+      mostrarModoFormulario('existente');
+      showToast('Este producto ya existe — confirma las piezas a sumar', 'error');
+      return;
+    }
     const costoPieza = costoTotal / piezas;
     const ganancia   = precioVenta - costoPieza;
-
-    // ── Buscar si ya existe el producto (por código o por nombre) ──
-    const existente = productos.find(p => {
-      const mismoNombre = p.nombre.toLowerCase() === nombre.toLowerCase();
-      const mismoCodigo = codigo && p.codigo && p.codigo.trim() === codigo.trim();
-      return mismoNombre || mismoCodigo;
+    await addDoc(collection(db, 'productos'), {
+      nombre, codigo, costoTotal, piezas, costoPieza, precioVenta, ganancia, stock,
+      creadoEn: Timestamp.now()
     });
-
-    if (existente) {
-      // Producto ya existe → solo sumar stock y actualizar precios
-      const nuevoStock = (existente.stock || 0) + stock;
-      await updateDoc(doc(db, 'productos', existente.id), {
-        stock: nuevoStock,
-        costoPieza,
-        precioVenta,
-        ganancia,
-        costoTotal,
-        piezas
-      });
-      ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock'].forEach(id => {
-        document.getElementById(id).value = '';
-      });
-      document.getElementById('costo-pieza-preview').textContent = '';
-      document.getElementById('scan-result-text').textContent    = '';
-      showToast(`Stock actualizado: ${existente.nombre} → ${nuevoStock} pzas ✓`);
-    } else {
-      // Producto nuevo → crear
-      await addDoc(collection(db, 'productos'), {
-        nombre, codigo, costoTotal, piezas, costoPieza, precioVenta, ganancia, stock,
-        creadoEn: Timestamp.now()
-      });
-      ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock'].forEach(id => {
-        document.getElementById(id).value = '';
-      });
-      document.getElementById('costo-pieza-preview').textContent = '';
-      document.getElementById('scan-result-text').textContent    = '';
-      showToast('Producto nuevo guardado ✓');
-    }
-    scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+    limpiarFormAgregar();
+    showToast('Producto nuevo guardado ✓');
   };
 
   window.eliminarProducto = async (id) => {
@@ -539,6 +589,7 @@
       document.getElementById('p-codigo').value = code;
       document.getElementById('scan-result-text').textContent = '✓ Código: ' + code;
       showToast('Escaneado: ' + code);
+      verificarExistencia();
     }
   });
 
@@ -586,6 +637,7 @@
       document.getElementById('scan-result-text').textContent = '✓ ' + barcodeBuffer;
       showToast('Código: ' + barcodeBuffer);
       barcodeBuffer = '';
+      verificarExistencia();
     }
     barcodeTimeout = setTimeout(()=>{ barcodeBuffer=''; }, 150);
   };
@@ -801,6 +853,20 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .diag-warn{color:var(--orange);background:rgba(255,159,67,.08)}
 .diag-error{color:var(--red);background:rgba(255,77,109,.08)}
 
+/* PRODUCTO EXISTENTE */
+.existente-card{border-color:rgba(61,220,132,.35)!important;background:rgba(61,220,132,.04)!important}
+.existente-header{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+.existente-icon{font-size:2rem;line-height:1}
+.existente-titulo{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.existente-nombre{font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem;color:var(--text)}
+.existente-info{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:4px}
+.existente-dato{background:var(--surface2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:3px}
+.existente-dato span{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.existente-dato b{font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem}
+.existente-dato b.green{color:var(--green)}
+.btn-cancelar-existente{flex:1;background:transparent;border:1px solid var(--border);color:var(--muted);padding:13px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:.9rem;transition:all .2s}
+.btn-cancelar-existente:hover{border-color:var(--red);color:var(--red)}
+
 /* PIN MODAL */
 .pin-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:999;padding:16px}
 .pin-modal{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:28px 24px;width:100%;max-width:340px;box-shadow:0 30px 60px rgba(0,0,0,.6)}
@@ -861,35 +927,67 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     <!-- AGREGAR -->
     <div class="tab-content" id="tab-agregar">
       <div class="page-title">📦 Agregar producto</div>
+
+      <!-- Escáner siempre visible arriba -->
       <div class="card">
-        <div class="card-title">Datos del producto</div>
+        <div class="card-title">📷 Buscar por código de barras</div>
+        <div class="scanner-section">
+          <div class="scan-btn-row">
+            <button class="btn-scan" id="btn-camara" onclick="toggleCamera()">📷 Escanear con cámara</button>
+            <button class="btn-scan" onclick="activarLector()">🔫 Lector físico</button>
+          </div>
+          <div id="camera-container">
+            <video id="video-preview" autoplay playsinline muted></video>
+            <div class="camera-overlay">
+              <div class="camera-frame">
+                <div class="corner-tr"></div>
+                <div class="corner-bl"></div>
+                <div class="scan-line"></div>
+              </div>
+            </div>
+          </div>
+          <div class="scan-result" id="scan-result-text"></div>
+        </div>
+        <input class="scanner-hidden-input" id="scanner-hidden"
+          onkeydown="onScannerKey(event)" autocomplete="off" tabindex="-1"/>
+        <input type="text" id="p-codigo" placeholder="O escribe el código manualmente..."
+          style="margin-top:10px;width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;color:var(--text);font-size:.94rem;outline:none;font-family:'DM Sans',sans-serif;"
+          oninput="verificarExistencia()"/>
+      </div>
+
+      <!-- MODO: Producto YA existe -->
+      <div id="form-producto-existente" class="card existente-card" style="display:none">
+        <div class="existente-header">
+          <span class="existente-icon">✅</span>
+          <div>
+            <div class="existente-titulo">Producto encontrado</div>
+            <div class="existente-nombre" id="encontrado-nombre"></div>
+          </div>
+        </div>
+        <div class="existente-info">
+          <div class="existente-dato"><span>Código</span><b id="encontrado-codigo"></b></div>
+          <div class="existente-dato"><span>Stock actual</span><b id="encontrado-stock" class="green"></b> pzas</div>
+          <div class="existente-dato"><span>Precio venta</span><b id="encontrado-precio"></b></div>
+        </div>
+        <div class="form-group" style="margin-top:14px">
+          <label>¿Cuántas piezas nuevas vas a agregar?</label>
+          <input type="number" id="p-piezas-extra" placeholder="Ej: 25" min="1" inputmode="numeric"
+            style="background:var(--surface2);border:1px solid var(--accent);border-radius:10px;padding:13px 14px;color:var(--text);font-size:1.1rem;outline:none;width:100%;text-align:center;font-family:'DM Sans',sans-serif;font-weight:700;"
+            onkeydown="if(event.key==='Enter') confirmarAgregarStock()"/>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:10px">
+          <button class="btn-cancelar-existente" onclick="cancelarExistente()">Cancelar</button>
+          <button class="btn-primary" style="margin-top:0;flex:2" onclick="confirmarAgregarStock()">+ Sumar al stock</button>
+        </div>
+      </div>
+
+      <!-- MODO: Producto NUEVO -->
+      <div id="form-nuevo-producto" class="card">
+        <div class="card-title">Nuevo producto</div>
         <div class="form-grid">
           <div class="form-group form-full">
             <label>Nombre del producto *</label>
-            <input type="text" id="p-nombre" placeholder="Ej: Pulparindo"/>
-          </div>
-          <div class="form-group form-full">
-            <label>Código de barras</label>
-            <input type="text" id="p-codigo" placeholder="Escribe o escanea"/>
-            <div class="scanner-section">
-              <div class="scan-btn-row">
-                <button class="btn-scan" id="btn-camara" onclick="toggleCamera()">📷 Escanear con cámara</button>
-                <button class="btn-scan" onclick="activarLector()">🔫 Lector físico</button>
-              </div>
-              <div id="camera-container">
-                <video id="video-preview" autoplay playsinline muted></video>
-                <div class="camera-overlay">
-                  <div class="camera-frame">
-                    <div class="corner-tr"></div>
-                    <div class="corner-bl"></div>
-                    <div class="scan-line"></div>
-                  </div>
-                </div>
-              </div>
-              <div class="scan-result" id="scan-result-text"></div>
-            </div>
-            <input class="scanner-hidden-input" id="scanner-hidden"
-              onkeydown="onScannerKey(event)" autocomplete="off" tabindex="-1"/>
+            <input type="text" id="p-nombre" placeholder="Ej: Pulparindo" oninput="verificarExistencia()"/>
           </div>
           <div class="form-group">
             <label>Costo total lote ($) *</label>
@@ -904,14 +1002,14 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
             <input type="number" id="p-precio-venta" placeholder="3.00" step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
           </div>
           <div class="form-group">
-            <label>Stock actual (pzas) *</label>
+            <label>Stock inicial (pzas) *</label>
             <input type="number" id="p-stock" placeholder="25" min="0" inputmode="numeric"/>
           </div>
           <div class="form-group form-full">
             <div class="preview-text" id="costo-pieza-preview"></div>
           </div>
         </div>
-        <button class="btn-primary" onclick="agregarProducto()">+ Guardar producto</button>
+        <button class="btn-primary" onclick="agregarProducto()">+ Guardar producto nuevo</button>
       </div>
     </div>
 
