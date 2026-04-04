@@ -327,6 +327,7 @@
     const cont = document.getElementById('stock-list');
     if (!cont) return;
     if (!filtered.length) { cont.innerHTML = '<div class="empty-state">No hay productos en stock</div>'; return; }
+    const esOwner = currentUser && currentUser.email === OWNER_EMAIL;
     cont.innerHTML = filtered.map(p => `
       <div class="stock-card ${p.stock<=5?'low-stock':''}">
         <div class="stock-card-header">
@@ -341,11 +342,12 @@
           <span>Venta: <b>$${(p.precioVenta||0).toFixed(2)}</b></span>
           <span class="ganancia">Ganancia: $${(p.ganancia||0).toFixed(2)}</span>
         </div>
+        ${esOwner ? `
         <div class="stock-actions">
           <button class="btn-icon" onclick="editarStock('${p.id}',-1)">−</button>
           <button class="btn-icon" onclick="editarStock('${p.id}',1)">+</button>
           <button class="btn-icon btn-danger" onclick="eliminarProducto('${p.id}')">🗑</button>
-        </div>
+        </div>` : ''}
       </div>`).join('');
   }
 
