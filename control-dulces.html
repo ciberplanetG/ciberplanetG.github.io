@@ -266,17 +266,45 @@
     }
     const costoPieza = costoTotal / piezas;
     const ganancia   = precioVenta - costoPieza;
-    await addDoc(collection(db, 'productos'), {
-      nombre, codigo, costoTotal, piezas, costoPieza, precioVenta, ganancia, stock,
-      creadoEn: Timestamp.now()
+
+    // ── Buscar si ya existe el producto (por código o por nombre) ──
+    const existente = productos.find(p => {
+      const mismoNombre = p.nombre.toLowerCase() === nombre.toLowerCase();
+      const mismoCodigo = codigo && p.codigo && p.codigo.trim() === codigo.trim();
+      return mismoNombre || mismoCodigo;
     });
-    ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock'].forEach(id => {
-      document.getElementById(id).value = '';
-    });
-    document.getElementById('costo-pieza-preview').textContent = '';
-    document.getElementById('scan-result-text').textContent    = '';
-    stopCamera();
-    showToast('Producto guardado ✓');
+
+    if (existente) {
+      // Producto ya existe → solo sumar stock y actualizar precios
+      const nuevoStock = (existente.stock || 0) + stock;
+      await updateDoc(doc(db, 'productos', existente.id), {
+        stock: nuevoStock,
+        costoPieza,
+        precioVenta,
+        ganancia,
+        costoTotal,
+        piezas
+      });
+      ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock'].forEach(id => {
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('costo-pieza-preview').textContent = '';
+      document.getElementById('scan-result-text').textContent    = '';
+      showToast(`Stock actualizado: ${existente.nombre} → ${nuevoStock} pzas ✓`);
+    } else {
+      // Producto nuevo → crear
+      await addDoc(collection(db, 'productos'), {
+        nombre, codigo, costoTotal, piezas, costoPieza, precioVenta, ganancia, stock,
+        creadoEn: Timestamp.now()
+      });
+      ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock'].forEach(id => {
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('costo-pieza-preview').textContent = '';
+      document.getElementById('scan-result-text').textContent    = '';
+      showToast('Producto nuevo guardado ✓');
+    }
+    scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
   };
 
   window.eliminarProducto = async (id) => {
