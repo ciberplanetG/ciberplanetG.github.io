@@ -161,7 +161,7 @@
 
         let lastCode     = null; // último código detectado
         let confirmCount = 0;    // frames consecutivos con el mismo código
-        const CONFIRM    = 2;    // cuántos frames para confirmar
+        const CONFIRM    = 1;    // 1 frame = confirmación instantánea
 
         // Dibuja el polígono alrededor del código en el canvas overlay
         const drawBox = (barcode, vw, vh, confirmed) => {
@@ -226,11 +226,19 @@
         };
 
         // Zonas de recorte en cascada (si el frame completo falla)
+        // Optimizadas para: etiquetas en curvas, ángulos, quiet zones pequeñas
         const getCrops = (vw, vh) => [
-          { sx: 0,                   sy: Math.floor(vh*0.33), sw: vw,                  sh: Math.floor(vh*0.34), scale: 1,   contrast: 1.5 },
-          { sx: Math.floor(vw*0.15), sy: Math.floor(vh*0.18), sw: Math.floor(vw*0.70), sh: Math.floor(vh*0.64), scale: 1.6, contrast: 1.5 },
-          { sx: 0,                   sy: Math.floor(vh*0.04), sw: vw,                  sh: Math.floor(vh*0.32), scale: 1,   contrast: 1.3 },
-          { sx: 0,                   sy: Math.floor(vh*0.64), sw: vw,                  sh: Math.floor(vh*0.32), scale: 1,   contrast: 1.3 },
+          // Tira central delgada — EAN-13/UPC en posición normal
+          { sx: 0,                   sy: Math.floor(vh*0.33), sw: vw,                  sh: Math.floor(vh*0.34), scale: 1,   contrast: 1.6, bright: 1.05 },
+          // Centro upscale ×2 — código pequeño o lejano (más zoom = más píxeles por barra)
+          { sx: Math.floor(vw*0.25), sy: Math.floor(vh*0.25), sw: Math.floor(vw*0.50), sh: Math.floor(vh*0.50), scale: 2.0, contrast: 1.5, bright: 1.05 },
+          // Contraste muy alto — código en superficie curva/brillante
+          { sx: 0,                   sy: Math.floor(vh*0.20), sw: vw,                  sh: Math.floor(vh*0.60), scale: 1,   contrast: 2.2, bright: 1.1  },
+          // Franja superior e inferior — código no centrado
+          { sx: 0,                   sy: Math.floor(vh*0.04), sw: vw,                  sh: Math.floor(vh*0.32), scale: 1,   contrast: 1.6, bright: 1.05 },
+          { sx: 0,                   sy: Math.floor(vh*0.64), sw: vw,                  sh: Math.floor(vh*0.32), scale: 1,   contrast: 1.6, bright: 1.05 },
+          // Centro upscale ×2 con contraste muy alto — peor caso (etiqueta curva + lejano)
+          { sx: Math.floor(vw*0.20), sy: Math.floor(vh*0.20), sw: Math.floor(vw*0.60), sh: Math.floor(vh*0.60), scale: 2.0, contrast: 2.5, bright: 1.15 },
         ];
 
         const loop = async () => {
@@ -244,14 +252,28 @@
               // Intento 1: frame completo directo (más rápido, y tiene cornerPoints correctos)
               let found = await det.detect(video);
 
-              // Intentos 2-5: recortes con contraste
+              // Intento 1b: frame completo con contraste alto (superficies brillantes/curvas)
+              if (!found.length) {
+                offscreen.width  = vw;
+                offscreen.height = vh;
+                offCtx.filter = 'contrast(1.8) brightness(1.08)';
+                offCtx.drawImage(video, 0, 0);
+                offCtx.filter = 'none';
+                found = await det.detect(offscreen);
+                // Ajustar cornerPoints si se encontró
+                if (found.length) {
+                  // No necesita ajuste, misma resolución que el video original
+                }
+              }
+
+              // Intentos 2-7: recortes con contraste
               if (!found.length) {
                 for (const z of getCrops(vw, vh)) {
                   const dw = Math.floor(z.sw * z.scale);
                   const dh = Math.floor(z.sh * z.scale);
                   offscreen.width  = dw;
                   offscreen.height = dh;
-                  offCtx.filter = `contrast(${z.contrast}) brightness(1.05)`;
+                  offCtx.filter = `contrast(${z.contrast}) brightness(${z.bright||1.05})`;
                   offCtx.drawImage(video, z.sx, z.sy, z.sw, z.sh, 0, 0, dw, dh);
                   offCtx.filter = 'none';
                   // Los cornerPoints del recorte necesitan ser reescalados al frame completo
