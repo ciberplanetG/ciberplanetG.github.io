@@ -102,256 +102,164 @@
   let ventaBarcodeBuffer  = "";
   let ventaBarcodeTimeout = null;
 
-  // ── ESCÁNER INSTANTÁNEO ─────────────────────────────────────────
-  // Estrategia: BarcodeDetector nativo (WASM interno del SO) en Worker
-  // con fallback a ZXing modo stream directo. Sin confirmación doble,
-  // sin oversampling, loop de máxima frecuencia con micro-throttle.
+  // ── ESCÁNER ──────────────────────────────────────────────────────
   function crearScanner() {
     return {
-      active: false, stream: null, loopId: null,
-      zxingReader: null, flashOn: false, flashSupported: false,
-      _containerId: null, _btnId: null, _processing: false,
+      active:false, stream:null, rafId:null, zxing:null, busy:false,
+      flashOn:false, flashOk:false, cid:'', bid:'',
 
-      _beep() {
+      beep() {
         try {
-          const ctx = new (window.AudioContext || window.webkitAudioContext)();
-          const o = ctx.createOscillator(), g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination);
-          o.frequency.value = 1900; o.type = 'sine';
-          g.gain.setValueAtTime(0.4, ctx.currentTime);
-          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-          o.start(); o.stop(ctx.currentTime + 0.12);
-        } catch(e) {}
+          const ac=new(window.AudioContext||window.webkitAudioContext)();
+          const o=ac.createOscillator(),g=ac.createGain();
+          o.connect(g);g.connect(ac.destination);
+          o.frequency.value=1850;o.type='sine';
+          g.gain.setValueAtTime(0.3,ac.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.14);
+          o.start();o.stop(ac.currentTime+0.14);
+        }catch(e){}
       },
 
-      async _initFlash() {
+      async checkFlash() {
         try {
-          const track = this.stream?.getVideoTracks()[0];
-          const caps  = track?.getCapabilities?.() || {};
+          const track=this.stream.getVideoTracks()[0];
+          const caps=track.getCapabilities?track.getCapabilities():{};
           if (caps.torch) {
-            this.flashSupported = true;
-            const btn = document.getElementById('btn-flash-' + this._containerId);
-            if (btn) btn.style.display = 'inline-flex';
+            this.flashOk=true;
+            const btn=document.getElementById('fbtn-'+this.cid);
+            if(btn) btn.style.display='flex';
           }
-        } catch(e) {}
+        }catch(e){}
       },
 
       async toggleFlash() {
-        if (!this.flashSupported || !this.stream) return;
-        this.flashOn = !this.flashOn;
-        const track = this.stream.getVideoTracks()[0];
+        if (!this.flashOk||!this.stream){
+          showToast('Linterna no disponible (necesita HTTPS)','error'); return;
+        }
+        this.flashOn=!this.flashOn;
         try {
-          await track.applyConstraints({ advanced: [{ torch: this.flashOn }] });
-          const btn = document.getElementById('btn-flash-' + this._containerId);
-          if (btn) {
-            btn.textContent = this.flashOn ? '🔦 ON' : '🔦 Flash';
-            btn.classList.toggle('flash-on', this.flashOn);
+          await this.stream.getVideoTracks()[0]
+            .applyConstraints({advanced:[{torch:this.flashOn}]});
+          const btn=document.getElementById('fbtn-'+this.cid);
+          if(btn){
+            btn.textContent=this.flashOn?'🔦 ON':'🔦';
+            btn.style.background=this.flashOn?'#f5c842':'rgba(0,0,0,.65)';
+            btn.style.color=this.flashOn?'#000':'#fff';
           }
-        } catch(e) { showToast('Flash no soportado', 'error'); }
+        }catch(e){showToast('Error linterna','error');this.flashOn=!this.flashOn;}
       },
 
-      // ── Loop ultra-rápido con BarcodeDetector ─────────────────────
-      _startNativeLoop(video, det, onDetected) {
-        // Canvas offscreen — reutilizado, no creado cada frame
-        const canvas = new OffscreenCanvas(1, 1);
-        const ctx    = canvas.getContext('2d', { willReadFrequently: true });
-        let   skip   = 0; // micro-throttle: procesar 1 de cada N frames
-
-        const loop = async () => {
-          if (!this.active) return;
-
-          // Si ya hay un proceso corriendo, saltar este frame (no bloquear)
-          if (!this._processing && video.readyState >= 2 && video.videoWidth > 0) {
-            this._processing = true;
-            try {
-              const vw = video.videoWidth, vh = video.videoHeight;
-
-              // Intentar detección directa sobre el video (más rápido)
-              let found = await det.detect(video);
-
-              // Si falla, usar canvas recortado a zona central (más preciso)
-              if (!found.length) {
-                // Zona central 70% ancho, 55% alto — donde el usuario pone el código
-                const cw = Math.floor(vw * 0.70);
-                const ch = Math.floor(vh * 0.55);
-                const cx = Math.floor((vw - cw) / 2);
-                const cy = Math.floor((vh - ch) / 2);
-                canvas.width  = cw;
-                canvas.height = ch;
-                ctx.drawImage(video, cx, cy, cw, ch, 0, 0, cw, ch);
-                found = await det.detect(canvas);
-              }
-
-              if (found.length) {
-                onDetected(found[0].rawValue);
-                return; // Salir del loop
-              }
-            } catch(e) {}
-            this._processing = false;
-          }
-
-          // setTimeout(0) en lugar de rAF → no está limitado a 60fps
-          // y no se pausa cuando la pestaña está en background
-          this.loopId = setTimeout(loop, 0);
+      async toggle({videoId,containerId,btnId,onCode}) {
+        if(this.active){this.stop();return;}
+        this.cid=containerId; this.bid=btnId;
+        this.active=true; this.busy=false;
+        this.flashOn=false; this.flashOk=false;
+        document.getElementById(containerId).style.display='block';
+        document.getElementById(btnId).textContent='⏹ Cerrar cámara';
+        const video=document.getElementById(videoId);
+        const done=(code)=>{
+          if(!code||!code.trim()) return;
+          this.beep();
+          try{navigator.vibrate&&navigator.vibrate([30,10,60]);}catch(e){}
+          onCode(code.trim()); this.stop();
         };
-
-        this.loopId = setTimeout(loop, 0);
-      },
-
-      async toggle({ videoId, containerId, btnId, onCode }) {
-        this._containerId = containerId;
-        this._btnId       = btnId;
-        if (this.active) { this.stop({ containerId, btnId }); return; }
-
-        this.active      = true;
-        this.flashOn     = false;
-        this._processing = false;
-        this.flashSupported = false;
-
-        document.getElementById(containerId).style.display = 'block';
-        document.getElementById(btnId).textContent = '⏹ Detener';
-
-        const video = document.getElementById(videoId);
-
-        const onDetected = (code) => {
-          if (!code || !code.trim()) return;
-          this._beep();
-          try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
-          onCode(code.trim());
-          this.stop({ containerId, btnId });
-        };
-
         try {
-          // ── Pedir cámara con constraints óptimos para escaneo ──────
-          // 1280x720 es el sweet spot: suficiente resolución, máxima velocidad
-          // Pedir exacto evita que el driver reescale internamente (más lento)
-          const constraints = {
-            video: {
-              facingMode: { ideal: 'environment' },
-              width:  { ideal: 1280 },
-              height: { ideal: 720  },
-              frameRate: { ideal: 30, max: 60 }
-            }
-          };
+          this.stream=await navigator.mediaDevices.getUserMedia({
+            video:{facingMode:{ideal:'environment'},
+                   width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30}}
+          });
+          video.srcObject=this.stream; await video.play();
+          // autofocus
+          try{
+            const tr=this.stream.getVideoTracks()[0];
+            const cp=tr.getCapabilities?tr.getCapabilities():{};
+            if(cp.focusMode&&cp.focusMode.includes('continuous'))
+              await tr.applyConstraints({advanced:[{focusMode:'continuous'}]});
+          }catch(e){}
+          await this.checkFlash();
 
-          this.stream = await navigator.mediaDevices.getUserMedia(constraints);
-          video.srcObject = this.stream;
-          video.setAttribute('playsinline', true);
-          await video.play();
-
-          // Activar autofocus continuo (mejora enormemente la nitidez)
-          try {
-            const track = this.stream.getVideoTracks()[0];
-            const caps  = track.getCapabilities?.() || {};
-            const adv   = {};
-            if (caps.focusMode?.includes('continuous')) adv.focusMode = 'continuous';
-            if (caps.zoom) adv.zoom = caps.zoom.min; // zoom mínimo = más campo visual
-            if (Object.keys(adv).length) {
-              await track.applyConstraints({ advanced: [adv] }).catch(() => {});
-            }
-          } catch(e) {}
-
-          await this._initFlash();
-
-          // ── RAMA 1: BarcodeDetector nativo (Chrome Android ≥ 83) ────
-          if ('BarcodeDetector' in window) {
-            // Pedir TODOS los formatos soportados (el SO elige el más rápido)
-            let formats;
-            try {
-              formats = await BarcodeDetector.getSupportedFormats();
-            } catch(e) {
-              formats = [
-                'ean_13','ean_8','upc_a','upc_e',
-                'code_128','code_39','code_93','itf','codabar',
-                'qr_code','data_matrix','pdf417','aztec'
-              ];
-            }
-            const det = new BarcodeDetector({ formats });
-            this._startNativeLoop(video, det, onDetected);
-
-          // ── RAMA 2: ZXing (Safari / iOS / Firefox) ──────────────────
+          if('BarcodeDetector' in window){
+            let fmts;
+            try{fmts=await BarcodeDetector.getSupportedFormats();}
+            catch{fmts=['ean_13','ean_8','upc_a','upc_e','code_128','code_39',
+                        'code_93','itf','qr_code','data_matrix','pdf417','aztec','codabar'];}
+            const det=new BarcodeDetector({formats:fmts});
+            const cvs=document.createElement('canvas');
+            const ctx=cvs.getContext('2d',{willReadFrequently:true});
+            const loop=async()=>{
+              if(!this.active) return;
+              if(!this.busy&&video.readyState===4&&video.videoWidth>0){
+                this.busy=true;
+                try{
+                  let res=await det.detect(video);
+                  if(!res.length){
+                    const vw=video.videoWidth,vh=video.videoHeight;
+                    const cw=Math.floor(vw*.72),ch=Math.floor(vh*.58);
+                    cvs.width=cw;cvs.height=ch;
+                    ctx.drawImage(video,Math.floor((vw-cw)/2),Math.floor((vh-ch)/2),cw,ch,0,0,cw,ch);
+                    res=await det.detect(cvs);
+                  }
+                  if(res.length){done(res[0].rawValue);return;}
+                }catch(e){}
+                this.busy=false;
+              }
+              this.rafId=requestAnimationFrame(loop);
+            };
+            this.rafId=requestAnimationFrame(loop);
           } else {
-            let t = 0;
-            while (typeof ZXing === 'undefined' && t++ < 20) {
-              await new Promise(r => setTimeout(r, 200));
-            }
-            if (typeof ZXing === 'undefined') throw new Error('ZXing no disponible');
-
-            // Configurar ZXing con máxima velocidad y todos los formatos
-            const hints = new Map([
-              [ZXing.DecodeHintType.TRY_HARDER,       true],
-              [ZXing.DecodeHintType.ALSO_INVERTED,    false], // no invertir = más rápido
-              [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-                ZXing.BarcodeFormat.EAN_13,
-                ZXing.BarcodeFormat.EAN_8,
-                ZXing.BarcodeFormat.UPC_A,
-                ZXing.BarcodeFormat.UPC_E,
-                ZXing.BarcodeFormat.CODE_128,
-                ZXing.BarcodeFormat.CODE_39,
-                ZXing.BarcodeFormat.ITF,
-                ZXing.BarcodeFormat.QR_CODE,
-                ZXing.BarcodeFormat.DATA_MATRIX,
-                ZXing.BarcodeFormat.PDF_417,
+            let t=0;
+            while(typeof ZXing==='undefined'&&t++<20) await new Promise(r=>setTimeout(r,250));
+            if(typeof ZXing==='undefined') throw new Error('ZXing no disponible');
+            const hints=new Map([
+              [ZXing.DecodeHintType.TRY_HARDER,true],
+              [ZXing.DecodeHintType.POSSIBLE_FORMATS,[
+                ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.EAN_8,
+                ZXing.BarcodeFormat.UPC_A,ZXing.BarcodeFormat.UPC_E,
+                ZXing.BarcodeFormat.CODE_128,ZXing.BarcodeFormat.CODE_39,
+                ZXing.BarcodeFormat.ITF,ZXing.BarcodeFormat.QR_CODE,
+                ZXing.BarcodeFormat.DATA_MATRIX,ZXing.BarcodeFormat.PDF_417,
               ]]
             ]);
-
-            // timeBetweenScansMillis = 0 → máxima frecuencia posible
-            this.zxingReader = new ZXing.BrowserMultiFormatReader(hints, 0);
-            await this.zxingReader.decodeFromStream(this.stream, video, (result, err) => {
-              if (result) onDetected(result.getText());
-            });
+            this.zxing=new ZXing.BrowserMultiFormatReader(hints,50);
+            await this.zxing.decodeFromStream(this.stream,video,(r)=>{if(r)done(r.getText());});
           }
-
-        } catch(e) {
-          console.error('Scanner:', e);
-          showToast('No se pudo abrir la cámara: ' + (e.message || e), 'error');
-          this.stop({ containerId, btnId });
+        }catch(e){
+          console.error('Scanner:',e);
+          showToast('No se pudo abrir la cámara','error');
+          this.stop();
         }
       },
 
-      stop({ containerId, btnId }) {
-        this.active      = false;
-        this._processing = false;
-
-        if (this.loopId !== null) { clearTimeout(this.loopId); this.loopId = null; }
-
-        if (this.stream) {
-          try {
-            this.stream.getVideoTracks()[0]
-              ?.applyConstraints({ advanced: [{ torch: false }] })
-              .catch(() => {});
-          } catch(e) {}
-          this.stream.getTracks().forEach(t => t.stop());
-          this.stream = null;
+      stop({containerId,btnId}={}) {
+        // aceptar params externos sin usarlos (compatibilidad)
+        this.active=false; this.busy=false;
+        if(this.flashOk&&this.stream){
+          try{this.stream.getVideoTracks()[0]
+            .applyConstraints({advanced:[{torch:false}]});}catch(e){}
         }
-
-        if (this.zxingReader) {
-          try { this.zxingReader.reset(); } catch(e) {}
-          this.zxingReader = null;
-        }
-
-        const video = document.querySelector('#' + containerId + ' video');
-        if (video) { video.srcObject = null; }
-
-        const c = document.getElementById(containerId);
-        if (c) c.style.display = 'none';
-
-        const b = document.getElementById(btnId);
-        if (b) b.textContent = '📷 Escanear';
-
-        const fb = document.getElementById('btn-flash-' + containerId);
-        if (fb) {
-          fb.style.display = 'none';
-          fb.textContent = '🔦 Flash';
-          fb.classList.remove('flash-on');
-        }
-        this.flashSupported = false;
-        this.flashOn = false;
+        if(this.rafId!==null){cancelAnimationFrame(this.rafId);this.rafId=null;}
+        if(this.zxing){try{this.zxing.reset();}catch(e){}this.zxing=null;}
+        if(this.stream){this.stream.getTracks().forEach(t=>t.stop());this.stream=null;}
+        const cid=this.cid||(containerId||'');
+        const bid=this.bid||(btnId||'');
+        const vid=cid?document.querySelector('#'+cid+' video'):null;
+        if(vid) vid.srcObject=null;
+        const cont=cid?document.getElementById(cid):null;
+        if(cont) cont.style.display='none';
+        const btn=bid?document.getElementById(bid):null;
+        if(btn) btn.textContent='📷 Escanear con cámara';
+        const fb=cid?document.getElementById('fbtn-'+cid):null;
+        if(fb){fb.style.display='none';fb.textContent='🔦';
+               fb.style.background='rgba(0,0,0,.65)';fb.style.color='#fff';}
+        this.flashOn=false;this.flashOk=false;this.cid='';this.bid='';
       }
     };
   }
   const scannerAgregar = crearScanner();
   const scannerVentas  = crearScanner();
+  // Funciones globales para flash (evitan problema de 'this' en onclick HTML)
+  window.flashAgregar = () => scannerAgregar.toggleFlash();
+  window.flashVentas  = () => scannerVentas.toggleFlash();
 
   // ── AUTH ──────────────────────────────────────────────────────────
   onAuthStateChanged(auth, user => {
@@ -755,17 +663,46 @@
   });
 
   // ── CÁMARA VENTAS ─────────────────────────────────────────────────
+  // Búsqueda por texto en ventas
+  window.buscarProductoTexto = () => {
+    const val  = (document.getElementById('venta-search-text').value||'').trim().toLowerCase();
+    const drop = document.getElementById('venta-search-results');
+    if (!val) { drop.style.display='none'; drop.innerHTML=''; return; }
+    const matches = productos.filter(p=>
+      p.nombre.toLowerCase().includes(val)||(p.codigo||'').toLowerCase().includes(val)
+    );
+    if (!matches.length) {
+      drop.innerHTML='<div class="sr-empty">Sin resultados</div>';
+      drop.style.display='block'; return;
+    }
+    drop.innerHTML = matches.slice(0,8).map(p=>`
+      <div class="sr-item" onclick="elegirProductoVenta('${p.id}')">
+        <span class="sr-nombre">${p.nombre}</span>
+        <span class="sr-meta">${p.codigo?'#'+p.codigo+' &middot; ':''}Stock: ${p.stock} &middot; $${(p.precioVenta||0).toFixed(2)}</span>
+      </div>`).join('');
+    drop.style.display='block';
+  };
+
+  window.elegirProductoVenta = (id) => {
+    const p = productos.find(x=>x.id===id);
+    if (!p) return;
+    const sel=document.getElementById('venta-producto');
+    sel.innerHTML=`<option value="${p.id}" selected>${p.nombre}</option>`;
+    sel.value=p.id;
+    document.getElementById('venta-precio').value=p.precioVenta;
+    document.getElementById('venta-search-text').value=p.nombre;
+    const drop=document.getElementById('venta-search-results');
+    drop.style.display='none'; drop.innerHTML='';
+    document.getElementById('scan-result-venta').textContent='✓ '+p.nombre;
+    showToast('Producto: '+p.nombre);
+  };
+
   function buscarProductoPorCodigo(code) {
     const p = productos.find(x => (x.codigo||'').trim() === code.trim());
-    const resultEl = document.getElementById('scan-result-venta');
-    if (p) {
-      document.getElementById('venta-producto').value = p.id;
-      onProductoChange();
-      if (resultEl) resultEl.textContent = '✓ ' + p.nombre;
-      showToast('Producto: ' + p.nombre);
-    } else {
-      if (resultEl) resultEl.textContent = '✗ Código no encontrado: ' + code;
-      showToast('Producto no encontrado: ' + code, 'error');
+    if (p) { elegirProductoVenta(p.id); }
+    else {
+      document.getElementById('scan-result-venta').textContent = '✗ No encontrado: '+code;
+      showToast('Código no encontrado','error');
     }
   }
 
@@ -1078,6 +1015,30 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .btn-del-venta:hover{color:var(--red)}
 
 @media(max-width:420px){.form-grid{grid-template-columns:1fr}.dash-grid{grid-template-columns:1fr}.scan-btn-row{flex-direction:column}}
+
+/* Buscador ventas */
+.venta-search-input{width:100%;background:var(--surface2);border:1px solid var(--border);
+  border-radius:10px;padding:12px 14px;color:var(--text);font-size:.95rem;outline:none;
+  font-family:'DM Sans',sans-serif;transition:border-color .2s}
+.venta-search-input:focus{border-color:var(--accent)}
+.sr-drop{position:absolute;top:calc(100% + 4px);left:0;right:0;
+  background:var(--surface2);border:1px solid var(--border);border-radius:12px;
+  z-index:300;max-height:230px;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.55)}
+.sr-item{padding:12px 14px;cursor:pointer;border-bottom:1px solid var(--border);
+  display:flex;flex-direction:column;gap:3px;transition:background .15s}
+.sr-item:last-child{border-bottom:none}
+.sr-item:hover,.sr-item:active{background:rgba(245,200,66,.12)}
+.sr-nombre{font-family:'Syne',sans-serif;font-weight:700;font-size:.93rem}
+.sr-meta{font-size:.74rem;color:var(--muted)}
+.sr-empty{padding:14px;text-align:center;color:var(--muted);font-size:.85rem}
+/* Flash pill */
+.fbtn{position:absolute;bottom:10px;right:10px;display:none;
+  align-items:center;justify-content:center;width:46px;height:46px;
+  border-radius:50%;border:none;background:rgba(0,0,0,.65);color:#fff;
+  font-size:1.25rem;cursor:pointer;z-index:20;
+  transition:background .2s,color .2s,transform .1s;
+  -webkit-tap-highlight-color:transparent}
+.fbtn:active{transform:scale(.88)}
 </style>
 </head>
 <body>
@@ -1138,8 +1099,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
               </div>
             </div>
             <div class="cam-controls">
-              <button class="btn-flash" id="btn-flash-camera-container"
-                onclick="_scannerAgregar.toggleFlash()">🔦 Flash</button>
+              <button class="btn-flash" id="fbtn-camera-container"
+                onclick="flashAgregar()">🔦 Flash</button>
               <span class="cam-tip">Acerca el código al recuadro</span>
             </div>
           </div>
@@ -1223,8 +1184,23 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <div class="card">
         <div class="card-title">Nueva transacción</div>
         <div class="form-grid">
+          <!-- Búsqueda por nombre o código -->
           <div class="form-group form-full">
-            <label>Buscar por código de barras</label>
+            <label>🔍 Buscar producto por nombre o código</label>
+            <div style="position:relative">
+              <input type="text" id="venta-search-text"
+                placeholder="Escribe para buscar..."
+                oninput="buscarProductoTexto()"
+                autocomplete="off"
+                class="venta-search-input"/>
+              <div id="venta-search-results" class="sr-drop" style="display:none"></div>
+            </div>
+            <div class="scan-result" id="scan-result-venta"></div>
+          </div>
+
+          <!-- Escáner cámara -->
+          <div class="form-group form-full">
+            <label>📷 O escanea el código de barras</label>
             <div class="scanner-section">
               <div class="scan-btn-row">
                 <button class="btn-scan" id="btn-camara-venta" onclick="toggleVentaCamera()">📷 Escanear con cámara</button>
@@ -1239,23 +1215,19 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
                     <div class="scan-line"></div>
                   </div>
                 </div>
-                <div class="cam-controls">
-                  <button class="btn-flash" id="btn-flash-camera-container-venta"
-                    onclick="_scannerVentas.toggleFlash()">🔦 Flash</button>
-                  <span class="cam-tip">Acerca el código al recuadro</span>
-                </div>
+                <!-- Flash: onclick llama función global para evitar problema de 'this' -->
+                <button id="fbtn-camera-container-venta" class="fbtn"
+                  style="display:none" onclick="flashVentas()">🔦</button>
               </div>
-              <div class="scan-result" id="scan-result-venta"></div>
             </div>
             <input class="scanner-hidden-input" id="scanner-hidden-venta"
               onkeydown="onVentaScannerKey(event)" autocomplete="off" tabindex="-1"/>
           </div>
-          <div class="form-group form-full">
-            <label>Producto</label>
-            <select id="venta-producto" onchange="onProductoChange()">
-              <option value="">— Selecciona producto —</option>
-            </select>
-          </div>
+
+          <!-- Select oculto — usado internamente por registrarVenta() -->
+          <select id="venta-producto" style="display:none" onchange="onProductoChange()">
+            <option value="">— Selecciona producto —</option>
+          </select>
           <div class="form-group">
             <label>Cantidad</label>
             <input type="number" id="venta-cantidad" value="1" min="1" inputmode="numeric"/>
