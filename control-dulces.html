@@ -152,46 +152,55 @@
 
       // ── Loop ultra-rápido con BarcodeDetector ─────────────────────
       _startNativeLoop(video, det, onDetected) {
-        // Canvas offscreen — reutilizado, no creado cada frame
         const canvas = new OffscreenCanvas(1, 1);
         const ctx    = canvas.getContext('2d', { willReadFrequently: true });
-        let   skip   = 0; // micro-throttle: procesar 1 de cada N frames
+
+        // Estrategia multi-zona en orden de probabilidad:
+        // 1) Frame completo directo (sin copia, mas rapido)
+        // 2) Tira horizontal delgada + contraste (EAN-13/JAN/UPC/Code128 son lineales)
+        // 3) Centro cuadrado upscalado x1.6 + contraste (QR, DataMatrix, codigos lejanos)
+        // 4) Franja superior e inferior (codigos al borde del recuadro)
+        const getCrops = (vw, vh) => [
+          { sx: 0,                   sy: Math.floor(vh*0.33), sw: vw,                  sh: Math.floor(vh*0.34), scale: 1,   contrast: 1.5 },
+          { sx: Math.floor(vw*0.15), sy: Math.floor(vh*0.18), sw: Math.floor(vw*0.70), sh: Math.floor(vh*0.64), scale: 1.6, contrast: 1.5 },
+          { sx: 0,                   sy: Math.floor(vh*0.04), sw: vw,                  sh: Math.floor(vh*0.32), scale: 1,   contrast: 1.3 },
+          { sx: 0,                   sy: Math.floor(vh*0.64), sw: vw,                  sh: Math.floor(vh*0.32), scale: 1,   contrast: 1.3 },
+        ];
 
         const loop = async () => {
           if (!this.active) return;
 
-          // Si ya hay un proceso corriendo, saltar este frame (no bloquear)
           if (!this._processing && video.readyState >= 2 && video.videoWidth > 0) {
             this._processing = true;
             try {
               const vw = video.videoWidth, vh = video.videoHeight;
 
-              // Intentar detección directa sobre el video (más rápido)
+              // Intento 1: frame completo directo (max velocidad)
               let found = await det.detect(video);
 
-              // Si falla, usar canvas recortado a zona central (más preciso)
+              // Intentos 2-5: recortes optimizados por tipo de codigo
               if (!found.length) {
-                // Zona central 70% ancho, 55% alto — donde el usuario pone el código
-                const cw = Math.floor(vw * 0.70);
-                const ch = Math.floor(vh * 0.55);
-                const cx = Math.floor((vw - cw) / 2);
-                const cy = Math.floor((vh - ch) / 2);
-                canvas.width  = cw;
-                canvas.height = ch;
-                ctx.drawImage(video, cx, cy, cw, ch, 0, 0, cw, ch);
-                found = await det.detect(canvas);
+                for (const z of getCrops(vw, vh)) {
+                  const dw = Math.floor(z.sw * z.scale);
+                  const dh = Math.floor(z.sh * z.scale);
+                  canvas.width  = dw;
+                  canvas.height = dh;
+                  ctx.filter = `contrast(${z.contrast}) brightness(1.05)`;
+                  ctx.drawImage(video, z.sx, z.sy, z.sw, z.sh, 0, 0, dw, dh);
+                  ctx.filter = 'none';
+                  found = await det.detect(canvas);
+                  if (found.length) break;
+                }
               }
 
               if (found.length) {
                 onDetected(found[0].rawValue);
-                return; // Salir del loop
+                return;
               }
             } catch(e) {}
             this._processing = false;
           }
 
-          // setTimeout(0) en lugar de rAF → no está limitado a 60fps
-          // y no se pausa cuando la pestaña está en background
           this.loopId = setTimeout(loop, 0);
         };
 
@@ -277,25 +286,31 @@
             }
             if (typeof ZXing === 'undefined') throw new Error('ZXing no disponible');
 
-            // Configurar ZXing con máxima velocidad y todos los formatos
+            // ZXing: todos los formatos lineales y 2D, incluyendo JAN (= EAN_13)
             const hints = new Map([
-              [ZXing.DecodeHintType.TRY_HARDER,       true],
-              [ZXing.DecodeHintType.ALSO_INVERTED,    false], // no invertir = más rápido
+              [ZXing.DecodeHintType.TRY_HARDER, true],
+              [ZXing.DecodeHintType.ALSO_INVERTED, false],
+              [ZXing.DecodeHintType.ASSUME_GS1, false],
               [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-                ZXing.BarcodeFormat.EAN_13,
+                ZXing.BarcodeFormat.EAN_13,   // JAN es EAN-13
                 ZXing.BarcodeFormat.EAN_8,
                 ZXing.BarcodeFormat.UPC_A,
                 ZXing.BarcodeFormat.UPC_E,
                 ZXing.BarcodeFormat.CODE_128,
                 ZXing.BarcodeFormat.CODE_39,
+                ZXing.BarcodeFormat.CODE_93,
                 ZXing.BarcodeFormat.ITF,
+                ZXing.BarcodeFormat.CODABAR,
                 ZXing.BarcodeFormat.QR_CODE,
                 ZXing.BarcodeFormat.DATA_MATRIX,
                 ZXing.BarcodeFormat.PDF_417,
+                ZXing.BarcodeFormat.AZTEC,
+                ZXing.BarcodeFormat.RSS_14,
+                ZXing.BarcodeFormat.RSS_EXPANDED,
               ]]
             ]);
 
-            // timeBetweenScansMillis = 0 → máxima frecuencia posible
+            // timeBetweenScansMillis = 0 → maxima frecuencia
             this.zxingReader = new ZXing.BrowserMultiFormatReader(hints, 0);
             await this.zxingReader.decodeFromStream(this.stream, video, (result, err) => {
               if (result) onDetected(result.getText());
@@ -352,6 +367,8 @@
   }
   const scannerAgregar = crearScanner();
   const scannerVentas  = crearScanner();
+  window._scannerAgregar = scannerAgregar;
+  window._scannerVentas  = scannerVentas;
 
   // ── AUTH ──────────────────────────────────────────────────────────
   onAuthStateChanged(auth, user => {
@@ -836,6 +853,10 @@
     window.calcCostoPieza();
   };
 
+  // Conectar botones de modo directamente desde el módulo (más confiable que onclick en type="module")
+  document.getElementById('modo-lote').addEventListener('click', () => window.setModoCompra('lote'));
+  document.getElementById('modo-pieza').addEventListener('click', () => window.setModoCompra('pieza'));
+
   // ── PREVIEW ───────────────────────────────────────────────────────
   window.calcCostoPieza = () => {
     const precio = parseFloat(document.getElementById('p-precio-venta').value) || 0;
@@ -1238,10 +1259,10 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <div class="form-group form-full">
             <label>¿Cómo compraste este producto?</label>
             <div class="modo-toggle">
-              <button id="modo-lote" class="modo-btn modo-active" onclick="setModoCompra('lote')">
+              <button id="modo-lote" class="modo-btn modo-active">
                 📦 Por lote
               </button>
-              <button id="modo-pieza" class="modo-btn" onclick="setModoCompra('pieza')">
+              <button id="modo-pieza" class="modo-btn">
                 🏷 Por pieza
               </button>
             </div>
