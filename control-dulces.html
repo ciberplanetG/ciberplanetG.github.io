@@ -150,16 +150,82 @@
         } catch(e) { showToast('Flash no soportado', 'error'); }
       },
 
-      // ── Loop ultra-rápido con BarcodeDetector ─────────────────────
+      // ── Loop con overlay verde en tiempo real ────────────────────────
       _startNativeLoop(video, det, onDetected) {
-        const canvas = new OffscreenCanvas(1, 1);
-        const ctx    = canvas.getContext('2d', { willReadFrequently: true });
+        const offscreen = new OffscreenCanvas(1, 1);
+        const offCtx    = offscreen.getContext('2d', { willReadFrequently: true });
 
-        // Estrategia multi-zona en orden de probabilidad:
-        // 1) Frame completo directo (sin copia, mas rapido)
-        // 2) Tira horizontal delgada + contraste (EAN-13/JAN/UPC/Code128 son lineales)
-        // 3) Centro cuadrado upscalado x1.6 + contraste (QR, DataMatrix, codigos lejanos)
-        // 4) Franja superior e inferior (codigos al borde del recuadro)
+        // Canvas overlay encima del video (dibuja el polígono verde)
+        const overlay = document.getElementById('overlay-' + this._containerId);
+        const ovCtx   = overlay ? overlay.getContext('2d') : null;
+
+        let lastCode     = null; // último código detectado
+        let confirmCount = 0;    // frames consecutivos con el mismo código
+        const CONFIRM    = 2;    // cuántos frames para confirmar
+
+        // Dibuja el polígono alrededor del código en el canvas overlay
+        const drawBox = (barcode, vw, vh, confirmed) => {
+          if (!ovCtx || !overlay) return;
+          // Sincronizar tamaño canvas con el elemento DOM
+          overlay.width  = overlay.clientWidth  || overlay.offsetWidth  || vw;
+          overlay.height = overlay.clientHeight || overlay.offsetHeight || vh;
+          ovCtx.clearRect(0, 0, overlay.width, overlay.height);
+          if (!barcode || !barcode.cornerPoints || !barcode.cornerPoints.length) return;
+
+          const sx = overlay.width  / vw;
+          const sy = overlay.height / vh;
+          const pts = barcode.cornerPoints;
+
+          ovCtx.beginPath();
+          ovCtx.moveTo(pts[0].x * sx, pts[0].y * sy);
+          for (let i = 1; i < pts.length; i++) ovCtx.lineTo(pts[i].x * sx, pts[i].y * sy);
+          ovCtx.closePath();
+
+          const color = confirmed ? '#00FF88' : '#F5C842';
+          ovCtx.strokeStyle = color;
+          ovCtx.lineWidth   = confirmed ? 3.5 : 2.5;
+          ovCtx.shadowColor = color;
+          ovCtx.shadowBlur  = confirmed ? 14 : 8;
+          ovCtx.stroke();
+
+          // Relleno semitransparente
+          ovCtx.fillStyle = confirmed ? 'rgba(0,255,136,0.12)' : 'rgba(245,200,66,0.08)';
+          ovCtx.fill();
+
+          // Etiqueta del tipo de código encima del polígono
+          const minY = Math.min(...pts.map(p => p.y)) * sy;
+          const midX = pts.reduce((s,p) => s + p.x, 0) / pts.length * sx;
+          const label = barcode.format ? barcode.format.replace(/_/g,' ') : '';
+          if (label) {
+            ovCtx.font        = 'bold 11px sans-serif';
+            ovCtx.fillStyle   = confirmed ? '#00FF88' : '#F5C842';
+            ovCtx.shadowColor = '#000';
+            ovCtx.shadowBlur  = 4;
+            ovCtx.textAlign   = 'center';
+            ovCtx.fillText(label, midX, Math.max(14, minY - 6));
+          }
+        };
+
+        const clearBox = () => {
+          if (!ovCtx || !overlay) return;
+          ovCtx.clearRect(0, 0, overlay.width, overlay.height);
+        };
+
+        // Flash verde de confirmación (parpadeo rápido al leer)
+        const flashConfirm = () => {
+          if (!ovCtx || !overlay) return;
+          let n = 0;
+          const blink = setInterval(() => {
+            ovCtx.clearRect(0, 0, overlay.width, overlay.height);
+            if (n % 2 === 0) {
+              ovCtx.fillStyle = 'rgba(0,255,136,0.25)';
+              ovCtx.fillRect(0, 0, overlay.width, overlay.height);
+            }
+            if (++n >= 4) { clearInterval(blink); clearBox(); }
+          }, 60);
+        };
+
+        // Zonas de recorte en cascada (si el frame completo falla)
         const getCrops = (vw, vh) => [
           { sx: 0,                   sy: Math.floor(vh*0.33), sw: vw,                  sh: Math.floor(vh*0.34), scale: 1,   contrast: 1.5 },
           { sx: Math.floor(vw*0.15), sy: Math.floor(vh*0.18), sw: Math.floor(vw*0.70), sh: Math.floor(vh*0.64), scale: 1.6, contrast: 1.5 },
@@ -175,27 +241,57 @@
             try {
               const vw = video.videoWidth, vh = video.videoHeight;
 
-              // Intento 1: frame completo directo (max velocidad)
+              // Intento 1: frame completo directo (más rápido, y tiene cornerPoints correctos)
               let found = await det.detect(video);
 
-              // Intentos 2-5: recortes optimizados por tipo de codigo
+              // Intentos 2-5: recortes con contraste
               if (!found.length) {
                 for (const z of getCrops(vw, vh)) {
                   const dw = Math.floor(z.sw * z.scale);
                   const dh = Math.floor(z.sh * z.scale);
-                  canvas.width  = dw;
-                  canvas.height = dh;
-                  ctx.filter = `contrast(${z.contrast}) brightness(1.05)`;
-                  ctx.drawImage(video, z.sx, z.sy, z.sw, z.sh, 0, 0, dw, dh);
-                  ctx.filter = 'none';
-                  found = await det.detect(canvas);
-                  if (found.length) break;
+                  offscreen.width  = dw;
+                  offscreen.height = dh;
+                  offCtx.filter = `contrast(${z.contrast}) brightness(1.05)`;
+                  offCtx.drawImage(video, z.sx, z.sy, z.sw, z.sh, 0, 0, dw, dh);
+                  offCtx.filter = 'none';
+                  // Los cornerPoints del recorte necesitan ser reescalados al frame completo
+                  const cropFound = await det.detect(offscreen);
+                  if (cropFound.length) {
+                    // Ajustar cornerPoints de vuelta a coordenadas del video original
+                    const xOff = z.sx, yOff = z.sy, xs = z.sw/dw, ys = z.sh/dh;
+                    cropFound[0].cornerPoints = cropFound[0].cornerPoints.map(p => ({
+                      x: p.x * xs + xOff,
+                      y: p.y * ys + yOff,
+                    }));
+                    found = cropFound;
+                    break;
+                  }
                 }
               }
 
               if (found.length) {
-                onDetected(found[0].rawValue);
-                return;
+                const code = found[0].rawValue;
+                if (code === lastCode) {
+                  confirmCount++;
+                } else {
+                  lastCode     = code;
+                  confirmCount = 1;
+                }
+
+                const confirmed = confirmCount >= CONFIRM;
+                drawBox(found[0], vw, vh, confirmed);
+
+                if (confirmed) {
+                  flashConfirm();
+                  this._beep();
+                  try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+                  onDetected(code);
+                  return; // Salir del loop
+                }
+              } else {
+                lastCode     = null;
+                confirmCount = 0;
+                clearBox();
               }
             } catch(e) {}
             this._processing = false;
@@ -224,8 +320,7 @@
 
         const onDetected = (code) => {
           if (!code || !code.trim()) return;
-          this._beep();
-          try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+          // beep y vibración ya ocurren en el loop al confirmar
           onCode(code.trim());
           this.stop({ containerId, btnId });
         };
@@ -362,6 +457,10 @@
         }
         this.flashSupported = false;
         this.flashOn = false;
+
+        // Limpiar overlay canvas
+        const ov = document.getElementById('overlay-' + containerId);
+        if (ov) { const c = ov.getContext('2d'); if (c) c.clearRect(0,0,ov.width,ov.height); }
       }
     };
   }
@@ -1196,6 +1295,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           </div>
           <div id="camera-container">
             <video id="video-preview" autoplay playsinline muted></video>
+            <canvas id="overlay-camera-container" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;border-radius:12px;"></canvas>
             <div class="camera-overlay">
               <div class="camera-frame">
                 <div class="corner-tr"></div>
@@ -1335,6 +1435,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
               </div>
               <div id="camera-container-venta">
                 <video id="video-preview-venta" autoplay playsinline muted></video>
+                <canvas id="overlay-camera-container-venta" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;border-radius:12px;"></canvas>
                 <div class="camera-overlay">
                   <div class="camera-frame">
                     <div class="corner-tr"></div>
