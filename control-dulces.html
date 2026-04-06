@@ -421,6 +421,7 @@
 
   // ── Estado del formulario de agregar ─────────────────────────────
   let productoEncontrado = null; // producto existente detectado
+  let modoCompra = 'lote'; // 'lote' | 'pieza'
 
   function limpiarFormAgregar() {
     ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock','p-piezas-extra'].forEach(id => {
@@ -821,14 +822,34 @@
     showToast('Listo — escanea con el lector físico');
   };
 
+  // ── MODO COMPRA (lote / pieza) ────────────────────────────────────
+  window.setModoCompra = (modo) => {
+    modoCompra = modo;
+    document.getElementById('modo-lote').classList.toggle('modo-active', modo === 'lote');
+    document.getElementById('modo-pieza').classList.toggle('modo-active', modo === 'pieza');
+    document.getElementById('modo-hint-lote').style.display  = modo === 'lote'  ? 'block' : 'none';
+    document.getElementById('modo-hint-pieza').style.display = modo === 'pieza' ? 'block' : 'none';
+    document.getElementById('fila-lote').style.display  = modo === 'lote'  ? '' : 'none';
+    document.getElementById('fila-pieza').style.display = modo === 'pieza' ? '' : 'none';
+    document.getElementById('lbl-costo').textContent =
+      modo === 'lote' ? 'Costo total del lote ($) *' : 'Costo por pieza ($) *';
+    window.calcCostoPieza();
+  };
+
   // ── PREVIEW ───────────────────────────────────────────────────────
   window.calcCostoPieza = () => {
-    const total  = parseFloat(document.getElementById('p-costo-total').value)||0;
-    const piezas = parseInt(document.getElementById('p-piezas').value)||1;
-    const precio = parseFloat(document.getElementById('p-precio-venta').value)||0;
-    const cpp = total/piezas, gan = precio-cpp;
-    document.getElementById('costo-pieza-preview').textContent =
-      total&&piezas ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${gan.toFixed(2)}` : '';
+    const precio = parseFloat(document.getElementById('p-precio-venta').value) || 0;
+    if (modoCompra === 'lote') {
+      const total  = parseFloat(document.getElementById('p-costo-total').value) || 0;
+      const piezas = parseInt(document.getElementById('p-piezas').value) || 1;
+      const cpp = total && piezas ? total / piezas : 0;
+      document.getElementById('costo-pieza-preview').textContent =
+        total && piezas ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${(precio - cpp).toFixed(2)}` : '';
+    } else {
+      const cpp = parseFloat(document.getElementById('p-costo-total').value) || 0;
+      document.getElementById('costo-pieza-preview').textContent =
+        cpp ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${(precio - cpp).toFixed(2)}` : '';
+    }
   };
 
   // ── ELIMINAR VENTA (solo dueño) ───────────────────────────────────
