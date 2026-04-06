@@ -102,93 +102,254 @@
   let ventaBarcodeBuffer  = "";
   let ventaBarcodeTimeout = null;
 
-  // ── ESCÁNER MEJORADO ──────────────────────────────────────────────
-  // Usa BarcodeDetector nativo (Chrome/Android — muy rápido y preciso)
-  // con fallback a ZXing (Safari/iOS)
+  // ── ESCÁNER INSTANTÁNEO ─────────────────────────────────────────
+  // Estrategia: BarcodeDetector nativo (WASM interno del SO) en Worker
+  // con fallback a ZXing modo stream directo. Sin confirmación doble,
+  // sin oversampling, loop de máxima frecuencia con micro-throttle.
   function crearScanner() {
     return {
-      active: false, stream: null, frameId: null, zxingReader: null,
+      active: false, stream: null, loopId: null,
+      zxingReader: null, flashOn: false, flashSupported: false,
+      _containerId: null, _btnId: null, _processing: false,
 
       _beep() {
         try {
           const ctx = new (window.AudioContext || window.webkitAudioContext)();
           const o = ctx.createOscillator(), g = ctx.createGain();
           o.connect(g); g.connect(ctx.destination);
-          o.frequency.value = 1760; o.type = 'sine';
-          g.gain.setValueAtTime(0.25, ctx.currentTime);
-          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.13);
-          o.start(); o.stop(ctx.currentTime + 0.13);
+          o.frequency.value = 1900; o.type = 'sine';
+          g.gain.setValueAtTime(0.4, ctx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+          o.start(); o.stop(ctx.currentTime + 0.12);
         } catch(e) {}
       },
 
+      async _initFlash() {
+        try {
+          const track = this.stream?.getVideoTracks()[0];
+          const caps  = track?.getCapabilities?.() || {};
+          if (caps.torch) {
+            this.flashSupported = true;
+            const btn = document.getElementById('btn-flash-' + this._containerId);
+            if (btn) btn.style.display = 'inline-flex';
+          }
+        } catch(e) {}
+      },
+
+      async toggleFlash() {
+        if (!this.flashSupported || !this.stream) return;
+        this.flashOn = !this.flashOn;
+        const track = this.stream.getVideoTracks()[0];
+        try {
+          await track.applyConstraints({ advanced: [{ torch: this.flashOn }] });
+          const btn = document.getElementById('btn-flash-' + this._containerId);
+          if (btn) {
+            btn.textContent = this.flashOn ? '🔦 ON' : '🔦 Flash';
+            btn.classList.toggle('flash-on', this.flashOn);
+          }
+        } catch(e) { showToast('Flash no soportado', 'error'); }
+      },
+
+      // ── Loop ultra-rápido con BarcodeDetector ─────────────────────
+      _startNativeLoop(video, det, onDetected) {
+        // Canvas offscreen — reutilizado, no creado cada frame
+        const canvas = new OffscreenCanvas(1, 1);
+        const ctx    = canvas.getContext('2d', { willReadFrequently: true });
+        let   skip   = 0; // micro-throttle: procesar 1 de cada N frames
+
+        const loop = async () => {
+          if (!this.active) return;
+
+          // Si ya hay un proceso corriendo, saltar este frame (no bloquear)
+          if (!this._processing && video.readyState >= 2 && video.videoWidth > 0) {
+            this._processing = true;
+            try {
+              const vw = video.videoWidth, vh = video.videoHeight;
+
+              // Intentar detección directa sobre el video (más rápido)
+              let found = await det.detect(video);
+
+              // Si falla, usar canvas recortado a zona central (más preciso)
+              if (!found.length) {
+                // Zona central 70% ancho, 55% alto — donde el usuario pone el código
+                const cw = Math.floor(vw * 0.70);
+                const ch = Math.floor(vh * 0.55);
+                const cx = Math.floor((vw - cw) / 2);
+                const cy = Math.floor((vh - ch) / 2);
+                canvas.width  = cw;
+                canvas.height = ch;
+                ctx.drawImage(video, cx, cy, cw, ch, 0, 0, cw, ch);
+                found = await det.detect(canvas);
+              }
+
+              if (found.length) {
+                onDetected(found[0].rawValue);
+                return; // Salir del loop
+              }
+            } catch(e) {}
+            this._processing = false;
+          }
+
+          // setTimeout(0) en lugar de rAF → no está limitado a 60fps
+          // y no se pausa cuando la pestaña está en background
+          this.loopId = setTimeout(loop, 0);
+        };
+
+        this.loopId = setTimeout(loop, 0);
+      },
+
       async toggle({ videoId, containerId, btnId, onCode }) {
+        this._containerId = containerId;
+        this._btnId       = btnId;
         if (this.active) { this.stop({ containerId, btnId }); return; }
-        this.active = true;
+
+        this.active      = true;
+        this.flashOn     = false;
+        this._processing = false;
+        this.flashSupported = false;
+
         document.getElementById(containerId).style.display = 'block';
-        document.getElementById(btnId).textContent = '⏹ Detener cámara';
+        document.getElementById(btnId).textContent = '⏹ Detener';
 
         const video = document.getElementById(videoId);
+
         const onDetected = (code) => {
+          if (!code || !code.trim()) return;
           this._beep();
-          try { navigator.vibrate?.([40, 20, 70]); } catch(e) {}
-          onCode(code);
+          try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+          onCode(code.trim());
           this.stop({ containerId, btnId });
         };
 
         try {
+          // ── Pedir cámara con constraints óptimos para escaneo ──────
+          // 1280x720 es el sweet spot: suficiente resolución, máxima velocidad
+          // Pedir exacto evita que el driver reescale internamente (más lento)
+          const constraints = {
+            video: {
+              facingMode: { ideal: 'environment' },
+              width:  { ideal: 1280 },
+              height: { ideal: 720  },
+              frameRate: { ideal: 30, max: 60 }
+            }
+          };
+
+          this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+          video.srcObject = this.stream;
+          video.setAttribute('playsinline', true);
+          await video.play();
+
+          // Activar autofocus continuo (mejora enormemente la nitidez)
+          try {
+            const track = this.stream.getVideoTracks()[0];
+            const caps  = track.getCapabilities?.() || {};
+            const adv   = {};
+            if (caps.focusMode?.includes('continuous')) adv.focusMode = 'continuous';
+            if (caps.zoom) adv.zoom = caps.zoom.min; // zoom mínimo = más campo visual
+            if (Object.keys(adv).length) {
+              await track.applyConstraints({ advanced: [adv] }).catch(() => {});
+            }
+          } catch(e) {}
+
+          await this._initFlash();
+
+          // ── RAMA 1: BarcodeDetector nativo (Chrome Android ≥ 83) ────
           if ('BarcodeDetector' in window) {
-            // ── Nativo (Chrome Android / Edge) ──
-            this.stream = await navigator.mediaDevices.getUserMedia({
-              video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
-            });
-            video.srcObject = this.stream;
-            await video.play();
-            const det = new BarcodeDetector({
-              formats: ['ean_13','ean_8','code_128','code_39','code_93','upc_a','upc_e','qr_code','itf','data_matrix']
-            });
-            const loop = async () => {
-              if (!this.active) return;
-              try {
-                if (video.readyState >= 2) {
-                  const found = await det.detect(video);
-                  if (found.length) { onDetected(found[0].rawValue); return; }
-                }
-              } catch(e) {}
-              this.frameId = requestAnimationFrame(loop);
-            };
-            this.frameId = requestAnimationFrame(loop);
+            // Pedir TODOS los formatos soportados (el SO elige el más rápido)
+            let formats;
+            try {
+              formats = await BarcodeDetector.getSupportedFormats();
+            } catch(e) {
+              formats = [
+                'ean_13','ean_8','upc_a','upc_e',
+                'code_128','code_39','code_93','itf','codabar',
+                'qr_code','data_matrix','pdf417','aztec'
+              ];
+            }
+            const det = new BarcodeDetector({ formats });
+            this._startNativeLoop(video, det, onDetected);
+
+          // ── RAMA 2: ZXing (Safari / iOS / Firefox) ──────────────────
           } else {
-            // ── Fallback ZXing (Safari / iOS) ──
             let t = 0;
-            while (typeof ZXing === 'undefined' && t++ < 10) await new Promise(r => setTimeout(r, 300));
-            if (typeof ZXing === 'undefined') throw new Error('ZXing no cargó');
-            this.zxingReader = new ZXing.BrowserMultiFormatReader();
-            const devices  = await this.zxingReader.listVideoInputDevices();
-            const trasera  = devices.find(d => /back|rear|environment/i.test(d.label));
-            const deviceId = (trasera || devices[devices.length - 1])?.deviceId;
-            await this.zxingReader.decodeFromVideoDevice(deviceId, videoId, (r) => { if (r) onDetected(r.getText()); });
+            while (typeof ZXing === 'undefined' && t++ < 20) {
+              await new Promise(r => setTimeout(r, 200));
+            }
+            if (typeof ZXing === 'undefined') throw new Error('ZXing no disponible');
+
+            // Configurar ZXing con máxima velocidad y todos los formatos
+            const hints = new Map([
+              [ZXing.DecodeHintType.TRY_HARDER,       true],
+              [ZXing.DecodeHintType.ALSO_INVERTED,    false], // no invertir = más rápido
+              [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+                ZXing.BarcodeFormat.EAN_13,
+                ZXing.BarcodeFormat.EAN_8,
+                ZXing.BarcodeFormat.UPC_A,
+                ZXing.BarcodeFormat.UPC_E,
+                ZXing.BarcodeFormat.CODE_128,
+                ZXing.BarcodeFormat.CODE_39,
+                ZXing.BarcodeFormat.ITF,
+                ZXing.BarcodeFormat.QR_CODE,
+                ZXing.BarcodeFormat.DATA_MATRIX,
+                ZXing.BarcodeFormat.PDF_417,
+              ]]
+            ]);
+
+            // timeBetweenScansMillis = 0 → máxima frecuencia posible
+            this.zxingReader = new ZXing.BrowserMultiFormatReader(hints, 0);
+            await this.zxingReader.decodeFromStream(this.stream, video, (result, err) => {
+              if (result) onDetected(result.getText());
+            });
           }
+
         } catch(e) {
-          showToast('No se pudo acceder a la cámara', 'error');
+          console.error('Scanner:', e);
+          showToast('No se pudo abrir la cámara: ' + (e.message || e), 'error');
           this.stop({ containerId, btnId });
         }
       },
 
       stop({ containerId, btnId }) {
-        this.active = false;
-        if (this.stream)    { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
-        if (this.frameId)   { cancelAnimationFrame(this.frameId); this.frameId = null; }
-        if (this.zxingReader) { try { this.zxingReader.reset(); } catch(e) {} this.zxingReader = null; }
-        const video = document.querySelector(`#${containerId} video`);
+        this.active      = false;
+        this._processing = false;
+
+        if (this.loopId !== null) { clearTimeout(this.loopId); this.loopId = null; }
+
+        if (this.stream) {
+          try {
+            this.stream.getVideoTracks()[0]
+              ?.applyConstraints({ advanced: [{ torch: false }] })
+              .catch(() => {});
+          } catch(e) {}
+          this.stream.getTracks().forEach(t => t.stop());
+          this.stream = null;
+        }
+
+        if (this.zxingReader) {
+          try { this.zxingReader.reset(); } catch(e) {}
+          this.zxingReader = null;
+        }
+
+        const video = document.querySelector('#' + containerId + ' video');
         if (video) { video.srcObject = null; }
+
         const c = document.getElementById(containerId);
         if (c) c.style.display = 'none';
+
         const b = document.getElementById(btnId);
-        if (b) b.textContent = '📷 Escanear con cámara';
+        if (b) b.textContent = '📷 Escanear';
+
+        const fb = document.getElementById('btn-flash-' + containerId);
+        if (fb) {
+          fb.style.display = 'none';
+          fb.textContent = '🔦 Flash';
+          fb.classList.remove('flash-on');
+        }
+        this.flashSupported = false;
+        this.flashOn = false;
       }
     };
   }
-
   const scannerAgregar = crearScanner();
   const scannerVentas  = crearScanner();
 
@@ -772,19 +933,50 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .scan-btn-row{display:flex;gap:8px}
 .btn-scan{flex:1;background:var(--surface2);border:1px dashed var(--accent);color:var(--accent);padding:10px 8px;border-radius:10px;cursor:pointer;font-size:.82rem;transition:background .2s;text-align:center;font-family:'DM Sans',sans-serif}
 .btn-scan:hover{background:rgba(245,200,66,.1)}
-#camera-container,#camera-container-venta{display:none;background:#000;border-radius:12px;overflow:hidden;position:relative;width:100%;aspect-ratio:16/9;max-height:280px}
+#camera-container,#camera-container-venta{
+  display:none;background:#000;border-radius:14px;overflow:hidden;
+  position:relative;width:100%;aspect-ratio:4/3;max-height:320px;
+  box-shadow:0 0 0 2px rgba(245,200,66,.3);
+}
 #video-preview,#video-preview-venta{width:100%;height:100%;object-fit:cover;display:block}
 .camera-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
-.camera-frame{position:relative;width:72%;max-width:260px;height:110px;border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.5)}
-.camera-frame::before,.camera-frame::after{content:'';position:absolute;width:22px;height:22px;border-color:var(--accent);border-style:solid}
-.camera-frame::before{top:0;left:0;border-width:3px 0 0 3px;border-radius:8px 0 0 0}
-.camera-frame::after{bottom:0;right:0;border-width:0 3px 3px 0;border-radius:0 0 8px 0}
-.camera-frame .corner-tr{position:absolute;top:0;right:0;width:22px;height:22px;border:3px solid var(--accent);border-left:none;border-bottom:none;border-radius:0 8px 0 0}
-.camera-frame .corner-bl{position:absolute;bottom:0;left:0;width:22px;height:22px;border:3px solid var(--accent);border-right:none;border-top:none;border-radius:0 0 0 8px}
-.scan-line{position:absolute;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:scanMove 1.8s ease-in-out infinite;box-shadow:0 0 8px var(--accent)}
-@keyframes scanMove{0%{top:8%}50%{top:88%}100%{top:8%}}
-.scan-result{font-size:.86rem;color:var(--green);font-weight:500;min-height:20px}
+/* Marco más grande para capturar mejor distintos tamaños de código */
+.camera-frame{
+  position:relative;
+  width:78%;max-width:300px;height:130px;
+  border-radius:12px;
+  box-shadow:0 0 0 9999px rgba(0,0,0,.45);
+}
+.camera-frame::before,.camera-frame::after{content:'';position:absolute;width:26px;height:26px;border-color:var(--accent);border-style:solid}
+.camera-frame::before{top:-1px;left:-1px;border-width:3px 0 0 3px;border-radius:10px 0 0 0}
+.camera-frame::after{bottom:-1px;right:-1px;border-width:0 3px 3px 0;border-radius:0 0 10px 0}
+.camera-frame .corner-tr{position:absolute;top:-1px;right:-1px;width:26px;height:26px;border:3px solid var(--accent);border-left:none;border-bottom:none;border-radius:0 10px 0 0}
+.camera-frame .corner-bl{position:absolute;bottom:-1px;left:-1px;width:26px;height:26px;border:3px solid var(--accent);border-right:none;border-top:none;border-radius:0 0 0 10px}
+/* Línea de escaneo más rápida y brillante */
+.scan-line{
+  position:absolute;left:4px;right:4px;height:2px;
+  background:linear-gradient(90deg,transparent 0%,var(--accent) 30%,#fff 50%,var(--accent) 70%,transparent 100%);
+  animation:scanMove 1.2s ease-in-out infinite;
+  box-shadow:0 0 10px 2px rgba(245,200,66,.6);
+}
+@keyframes scanMove{0%{top:6%}50%{top:90%}100%{top:6%}}
+.scan-result{font-size:.86rem;color:var(--green);font-weight:500;min-height:20px;margin-top:6px}
 .scanner-hidden-input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+/* Controles de cámara (flash) */
+.cam-controls{
+  position:absolute;bottom:0;left:0;right:0;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 12px;
+  background:linear-gradient(to top,rgba(0,0,0,.75) 0%,transparent 100%);
+}
+.btn-flash{
+  display:none;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.35);
+  color:#fff;padding:6px 14px;border-radius:20px;cursor:pointer;
+  font-size:.8rem;backdrop-filter:blur(4px);transition:all .2s;
+  font-family:'DM Sans',sans-serif;
+}
+.btn-flash.flash-on{background:var(--accent);border-color:var(--accent);color:#000;font-weight:700}
+.cam-tip{font-size:.68rem;color:rgba(255,255,255,.55);pointer-events:none}
 
 /* STOCK */
 .search-bar{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:.92rem;outline:none;width:100%;margin-bottom:14px;font-family:'DM Sans',sans-serif}
@@ -945,6 +1137,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
                 <div class="scan-line"></div>
               </div>
             </div>
+            <div class="cam-controls">
+              <button class="btn-flash" id="btn-flash-camera-container"
+                onclick="_scannerAgregar.toggleFlash()">🔦 Flash</button>
+              <span class="cam-tip">Acerca el código al recuadro</span>
+            </div>
           </div>
           <div class="scan-result" id="scan-result-text"></div>
         </div>
@@ -1041,6 +1238,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
                     <div class="corner-bl"></div>
                     <div class="scan-line"></div>
                   </div>
+                </div>
+                <div class="cam-controls">
+                  <button class="btn-flash" id="btn-flash-camera-container-venta"
+                    onclick="_scannerVentas.toggleFlash()">🔦 Flash</button>
+                  <span class="cam-tip">Acerca el código al recuadro</span>
                 </div>
               </div>
               <div class="scan-result" id="scan-result-venta"></div>
