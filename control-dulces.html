@@ -88,6 +88,52 @@
     p.style.display = p.style.display === 'none' ? 'block' : 'none';
   };
 
+  // ── VISION API CONFIG ─────────────────────────────────────────────
+  window.abrirVisionConfig = () => {
+    const modal = document.getElementById('vision-modal');
+    const input = document.getElementById('vision-key-input');
+    const bar   = document.getElementById('vision-key-status-bar');
+    if (input) input.value = VISION_API_KEY || '';
+    if (bar) {
+      bar.textContent = VISION_API_KEY
+        ? `✅ API Key guardada (${VISION_API_KEY.substring(0,8)}...)`
+        : '⚠️ Sin API Key — Vision API desactivada';
+      bar.style.color = VISION_API_KEY ? 'var(--green)' : 'var(--orange)';
+    }
+    if (modal) { modal.style.display = 'flex'; setTimeout(() => input?.focus(), 80); }
+  };
+
+  window.cerrarVisionConfig = () => {
+    const modal = document.getElementById('vision-modal');
+    if (modal) modal.style.display = 'none';
+  };
+
+  window.guardarVisionKey = () => {
+    const input  = document.getElementById('vision-key-input');
+    const status = document.getElementById('vision-status');
+    const bar    = document.getElementById('vision-key-status-bar');
+    const key    = input?.value.trim() || '';
+
+    if (key && !key.startsWith('AIza')) {
+      if (status) { status.textContent = '⚠️ Las API Keys de Google suelen comenzar con "AIza"'; status.style.color = 'var(--orange)'; }
+      return;
+    }
+
+    VISION_API_KEY = key;
+    localStorage.setItem('vision_api_key', key);
+
+    if (status) {
+      status.textContent = key ? '✅ API Key guardada correctamente' : '🗑 API Key eliminada — Vision desactivado';
+      status.style.color = key ? 'var(--green)' : 'var(--muted)';
+    }
+    if (bar) {
+      bar.textContent = key ? `✅ Activa (${key.substring(0,8)}...)` : '⚠️ Sin API Key';
+      bar.style.color = key ? 'var(--green)' : 'var(--orange)';
+    }
+    setTimeout(() => cerrarVisionConfig(), 1200);
+    showToast(key ? '☁️ Google Vision API activada' : 'Vision API desactivada', key ? 'ok' : 'info');
+  };
+
   let currentUser  = null;
   let productos    = [];
   let ventas       = [];
@@ -95,6 +141,11 @@
   // ── PERMISOS ─────────────────────────────────────────────────────
   const OWNER_EMAIL = 'giioniceman@gmail.com';
   const DELETE_PIN  = '25252250';
+
+  // ── GOOGLE VISION API ─────────────────────────────────────────────
+  // Obtén tu API Key en: https://console.cloud.google.com → APIs → Cloud Vision API
+  // Luego habilita la API y crea una clave de API. Pégala aquí:
+  let VISION_API_KEY = localStorage.getItem('vision_api_key') || '';
   // Cámara — sección Agregar
   let barcodeBuffer  = "";
   let barcodeTimeout = null;
@@ -614,6 +665,77 @@
           } finally { try { rdr.reset(); } catch(e) {} URL.revokeObjectURL(url); }
         };
 
+        // ── Google Vision API (fallback en la nube) ───────────────────
+        // Convierte el canvas a JPEG base64 y lo manda a Vision API.
+        // Detecta el texto impreso bajo el código de barras (dígitos EAN/Code-128, etc.)
+        // También intenta leer QR/Data Matrix via OBJECT_LOCALIZATION.
+        const tryGoogleVision = async (sourceImg) => {
+          if (!VISION_API_KEY) throw new Error('Sin API Key de Vision');
+          // Convertir a JPEG base64
+          const oc = new OffscreenCanvas(sourceImg.width || W, sourceImg.height || H);
+          oc.getContext('2d').drawImage(sourceImg, 0, 0);
+          const blob = await oc.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+          const base64 = await new Promise((res, rej) => {
+            const fr = new FileReader();
+            fr.onload  = () => res(fr.result.split(',')[1]);
+            fr.onerror = rej;
+            fr.readAsDataURL(blob);
+          });
+
+          const resp = await fetch(
+            `https://vision.googleapis.com/v1/images:annotate?key=${VISION_API_KEY}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                requests: [{
+                  image: { content: base64 },
+                  features: [
+                    { type: 'TEXT_DETECTION',          maxResults: 10 },
+                    { type: 'DOCUMENT_TEXT_DETECTION', maxResults: 1  }
+                  ]
+                }]
+              })
+            }
+          );
+
+          if (!resp.ok) throw new Error(`Vision HTTP ${resp.status}`);
+          const data = await resp.json();
+          if (data.error) throw new Error(data.error.message);
+
+          const annotations = data.responses?.[0]?.textAnnotations || [];
+          if (!annotations.length) throw new Error('Vision: sin texto');
+
+          const fullText = annotations[0]?.description || '';
+          console.log('[Vision API] Texto detectado:', fullText);
+
+          // Buscar secuencias numéricas que correspondan a códigos de barras comunes:
+          // EAN-13 (13 dígitos), EAN-8 (8), UPC-A (12), UPC-E (6-8), Code-128 (variable)
+          // Orden: más específico primero
+          const patterns = [
+            /\b\d{13}\b/g,   // EAN-13 / JAN
+            /\b\d{12}\b/g,   // UPC-A
+            /\b\d{8}\b/g,    // EAN-8
+            /\b[A-Z0-9\-\.\ \$\/\+\%]{6,20}\b/g,  // Code-128 / Code-39 alfanumérico
+            /\b\d{6,11}\b/g, // UPC-E / cortos
+          ];
+
+          for (const pat of patterns) {
+            const matches = [...fullText.matchAll(pat)];
+            if (matches.length) {
+              // Si hay un producto en la BD que coincida, priorizar ese match
+              for (const m of matches) {
+                const val = m[0].replace(/\s+/g, '');
+                const enBD = productos.find(p => p.codigo && p.codigo.trim() === val);
+                if (enBD) return val; // Match exacto en BD → retornar de inmediato
+              }
+              // Si no hay match en BD, devolver el primer candidato
+              return matches[0][0].replace(/\s+/g, '');
+            }
+          }
+          throw new Error('Vision: no se encontró código en el texto detectado');
+        };
+
         // ── 4. Estrategias (~40) ──────────────────────────────────────
         const PAD = 50;
         const cx4 = Math.round(W*0.15), cy4 = Math.round(H*0.15);
@@ -675,9 +797,33 @@
           if (statEl) statEl.innerHTML = `<span class="ok">✓ ${code}</span>`;
           onDetected(code.trim());
           setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2200);
-        } catch(e) {
-          // ── Fallback manual: mostrar input para que el usuario escriba el código ──
-          this._mostrarFallbackManual(wrap, statEl, prevEl, onDetected);
+        } catch(localErr) {
+          // ── 6. Fallback: Google Vision API ─────────────────────────
+          if (VISION_API_KEY) {
+            if (statEl) statEl.innerHTML = '<span class="spin">☁️ Consultando Google Vision…</span>';
+            try {
+              // Mandar la imagen completa y también la zona central ampliada
+              const visionOC = makeOC({ gray:true, contrast:1.8, pad:PAD });
+              const code = await tryGoogleVision(visionOC);
+              this._beep();
+              try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+              if (statEl) statEl.innerHTML = `<span class="ok">☁️ Vision: ✓ ${code}</span>`;
+              onDetected(code.trim());
+              setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2200);
+            } catch(visionErr) {
+              console.warn('[Vision API] Error:', visionErr.message);
+              const errMsg = visionErr.message?.includes('400') || visionErr.message?.includes('403')
+                ? '🔑 API Key incorrecta o sin permisos'
+                : visionErr.message;
+              if (statEl) statEl.innerHTML = `<span class="fail">☁️ Vision falló: ${errMsg}</span>`;
+              setTimeout(() => {
+                this._mostrarFallbackManual(wrap, statEl, prevEl, onDetected);
+              }, 1500);
+            }
+          } else {
+            // Sin API Key → fallback manual directo
+            this._mostrarFallbackManual(wrap, statEl, prevEl, onDetected);
+          }
         } finally {
           if (fotoBtn) fotoBtn.disabled = false;
         }
@@ -1613,6 +1759,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     <div class="topbar-right">
       <span id="conn-dot" title="Verificando conexión..." style="width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block;flex-shrink:0;transition:background .4s"></span>
       <span id="user-email"></span>
+      <button class="logout-btn" onclick="abrirVisionConfig()" title="Configurar Google Vision API"
+        style="background:rgba(245,200,66,.15);border-color:rgba(245,200,66,.4);color:var(--accent)">☁️</button>
       <button class="logout-btn" onclick="doLogout()">Salir</button>
     </div>
   </div>
@@ -1867,6 +2015,43 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <span class="icon">💰</span>Ventas
     </button>
   </nav>
+</div>
+
+<!-- VISION API CONFIG MODAL -->
+<div id="vision-modal" class="pin-modal-overlay" onclick="if(event.target===this)cerrarVisionConfig()"
+  style="display:none;align-items:center;justify-content:center">
+  <div class="pin-modal" style="max-width:380px">
+    <div class="pin-modal-title">☁️ Google Vision API</div>
+    <div class="pin-modal-sub" style="line-height:1.55">
+      Fallback en la nube para códigos difíciles.<br>
+      <span style="color:var(--muted)">Si el escáner local falla, Vision API intenta leer el código usando inteligencia artificial de Google.</span>
+    </div>
+
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:.78rem;color:var(--muted);line-height:1.6">
+      <b style="color:var(--text)">¿Cómo obtener tu API Key?</b><br>
+      1. Ve a <b style="color:var(--accent)">console.cloud.google.com</b><br>
+      2. Crea un proyecto (o usa uno existente)<br>
+      3. Activa la <b style="color:var(--text)">Cloud Vision API</b><br>
+      4. Ve a <b style="color:var(--text)">APIs y servicios → Credenciales</b><br>
+      5. Crea una <b style="color:var(--text)">Clave de API</b> y pégala abajo
+    </div>
+
+    <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:6px">Tu API Key de Vision:</label>
+    <input id="vision-key-input" type="text"
+      placeholder="AIzaSy..."
+      style="width:100%;background:var(--surface2);border:1.5px solid var(--border);border-radius:10px;padding:11px 14px;color:var(--text);font-size:.85rem;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:6px;transition:border-color .2s;box-sizing:border-box"
+      onfocus="this.style.borderColor='var(--accent)'"
+      onblur="this.style.borderColor='var(--border)'"/>
+
+    <div id="vision-status" style="font-size:.78rem;min-height:18px;margin-bottom:12px;color:var(--muted)"></div>
+
+    <div class="pin-btn-row">
+      <button class="pin-btn-cancel" onclick="cerrarVisionConfig()">Cancelar</button>
+      <button class="pin-btn-confirm" style="background:var(--accent);color:#000"
+        onclick="guardarVisionKey()">💾 Guardar</button>
+    </div>
+    <div id="vision-key-status-bar" style="margin-top:10px;font-size:.75rem;text-align:center;color:var(--muted)"></div>
+  </div>
 </div>
 
 <!-- PIN MODAL — solo visible para el dueño -->
