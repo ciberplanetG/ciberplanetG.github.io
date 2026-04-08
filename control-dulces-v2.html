@@ -1,0 +1,2200 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>CiberPlanet</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>"/>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js"></script>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+           collection, addDoc, doc, updateDoc, deleteDoc,
+           query, orderBy, Timestamp, onSnapshot, getDoc, setDoc }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyD4UrApmFeyQFjkkaWTphmjIqFFTWLaSfw",
+    authDomain: "control-dulces-8eaa0.firebaseapp.com",
+    projectId: "control-dulces-8eaa0",
+    storageBucket: "control-dulces-8eaa0.firebasestorage.app",
+    messagingSenderId: "867880935500",
+    appId: "1:867880935500:web:b1057d2a10cbf18c5c54e9",
+    measurementId: "G-R6NEMJ771N"
+  };
+
+  const app  = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+
+  // Persistencia multi-pestaña (Firebase v10 — no se pierden datos al recargar)
+  let db;
+  try {
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+    });
+  } catch(e) {
+    // Fallback si el navegador no soporta IndexedDB
+    const { getFirestore } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    db = getFirestore(app);
+    console.warn('Persistencia no disponible, usando modo normal:', e.message);
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── UTILIDADES DE IMAGEN PARA ESCÁNER ─────────────────────────────
+  // ══════════════════════════════════════════════════════════════════
+
+  // Detecta qué tan nítido/enfocado está un canvas usando varianza Laplaciana.
+  // Un valor bajo = imagen borrosa → no vale la pena intentar decodificar.
+  // Calcula solo en la franja central (donde suele estar el código).
+  function calcBlurScore(ctx, w, h) {
+    try {
+      const sy = Math.floor(h * 0.25), sh = Math.floor(h * 0.5);
+      const id  = ctx.getImageData(0, sy, w, sh);
+      const d   = id.data, W = w;
+      let sum = 0, cnt = 0;
+      const step = Math.max(2, Math.floor(W / 80)); // sampleo adaptivo
+      for (let y = step; y < sh - step; y += step) {
+        for (let x = step; x < W - step; x += step) {
+          const i  = (y * W + x) * 4;
+          const g  = (d[i]*299 + d[i+1]*587 + d[i+2]*114) / 1000;
+          const gU = (d[((y-step)*W+x)*4]*299 + d[((y-step)*W+x)*4+1]*587 + d[((y-step)*W+x)*4+2]*114) / 1000;
+          const gD = (d[((y+step)*W+x)*4]*299 + d[((y+step)*W+x)*4+1]*587 + d[((y+step)*W+x)*4+2]*114) / 1000;
+          const gL = (d[(y*W+x-step)*4]*299 + d[(y*W+x-step)*4+1]*587 + d[(y*W+x-step)*4+2]*114) / 1000;
+          const gR = (d[(y*W+x+step)*4]*299 + d[(y*W+x+step)*4+1]*587 + d[(y*W+x+step)*4+2]*114) / 1000;
+          const lap = Math.abs(4*g - gU - gD - gL - gR);
+          sum += lap * lap; cnt++;
+        }
+      }
+      return cnt > 0 ? sum / cnt : 0;
+    } catch(e) { return 999; } // si falla, asumir nítido
+  }
+
+  // Umbral de Otsu: calcula el mejor punto de binarización automáticamente
+  // según el histograma de la imagen. Mucho mejor que el umbral fijo 128.
+  function otsuThreshold(data) {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < data.length; i += 4) {
+      hist[Math.round(0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2])]++;
+    }
+    const total = data.length / 4;
+    let sum = 0;
+    for (let i = 0; i < 256; i++) sum += i * hist[i];
+    let sumB = 0, wB = 0, max = 0, thresh = 128;
+    for (let i = 0; i < 256; i++) {
+      wB += hist[i]; if (!wB) continue;
+      const wF = total - wB; if (!wF) break;
+      sumB += i * hist[i];
+      const mB = sumB / wB, mF = (sum - sumB) / wF;
+      const between = wB * wF * (mB - mF) * (mB - mF);
+      if (between > max) { max = between; thresh = i; }
+    }
+    return thresh;
+  }
+
+  // Aplica binarización con umbral Otsu a los pixeles de un ImageData
+  function applyOtsu(id) {
+    const d = id.data, thresh = otsuThreshold(d);
+    for (let i = 0; i < d.length; i += 4) {
+      const lum = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      const v = lum < thresh ? 0 : 255;
+      d[i] = d[i+1] = d[i+2] = v;
+    }
+  }
+
+  // Sharpening real por convolución (unsharp mask 3×3).
+  // CSS filter no hace esto — es solo contraste global.
+  // amount: 0.8 = suave, 1.5 = fuerte, 2.5 = muy agresivo
+  function applySharpening(ctx, w, h, amount = 1.2) {
+    const id  = ctx.getImageData(0, 0, w, h);
+    const src = new Uint8ClampedArray(id.data);
+    const dst = id.data;
+    const W   = w;
+    for (let y = 1; y < h-1; y++) {
+      for (let x = 1; x < W-1; x++) {
+        const i = (y*W+x)*4;
+        for (let c = 0; c < 3; c++) {
+          const center = src[i+c];
+          const top    = src[((y-1)*W+x)*4+c];
+          const bot    = src[((y+1)*W+x)*4+c];
+          const lft    = src[(y*W+x-1)*4+c];
+          const rgt    = src[(y*W+x+1)*4+c];
+          // Laplacian sharpening: center + amount*(center - neighbors_avg)
+          const v = center + amount * (4*center - top - bot - lft - rgt) * 0.25;
+          dst[i+c] = Math.max(0, Math.min(255, v));
+        }
+        dst[i+3] = 255;
+      }
+    }
+    ctx.putImageData(id, 0, 0);
+  }
+
+  // Ecualización de histograma (mejora contraste global adaptivo).
+  // Útil para imágenes con iluminación desigual.
+  function applyHistEq(ctx, w, h) {
+    const id = ctx.getImageData(0, 0, w, h);
+    const d  = id.data, n = w * h;
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < d.length; i += 4) {
+      const lum = Math.round(0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]);
+      hist[lum]++;
+    }
+    const cdf = new Uint32Array(256);
+    cdf[0] = hist[0];
+    for (let i = 1; i < 256; i++) cdf[i] = cdf[i-1] + hist[i];
+    const cdfMin = cdf.find(v => v > 0) || 1;
+    const scale = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) {
+      scale[i] = Math.round(((cdf[i] - cdfMin) / (n - cdfMin)) * 255);
+    }
+    for (let i = 0; i < d.length; i += 4) {
+      const lum = Math.round(0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]);
+      const eq  = scale[lum];
+      // Preservar color: ajustar cada canal proporcionalmente
+      const ratio = lum > 0 ? eq / lum : 1;
+      d[i]   = Math.min(255, d[i]   * ratio);
+      d[i+1] = Math.min(255, d[i+1] * ratio);
+      d[i+2] = Math.min(255, d[i+2] * ratio);
+    }
+    ctx.putImageData(id, 0, 0);
+  }
+
+  // ── DIAGNÓSTICO FIREBASE ───────────────────────────────────────────
+  let _diagLog = [];
+  function diagLog(msg, type='info') {
+    const ts = new Date().toLocaleTimeString('es-MX');
+    _diagLog.unshift({ ts, msg, type });
+    if (_diagLog.length > 20) _diagLog.pop();
+    renderDiagPanel();
+    console.log(`[Firebase ${type}] ${msg}`);
+  }
+
+  function renderDiagPanel() {
+    const el = document.getElementById('diag-log');
+    if (!el) return;
+    el.innerHTML = _diagLog.map(l =>
+      `<div class="diag-line diag-${l.type}">[${l.ts}] ${l.msg}</div>`
+    ).join('');
+  }
+
+  window.testFirebase = async () => {
+    diagLog('Iniciando prueba de conexión…');
+    const user = auth.currentUser;
+    if (!user) { diagLog('❌ No hay sesión activa', 'error'); return; }
+    diagLog(`✅ Usuario: ${user.email} (uid: ${user.uid})`);
+    diagLog(`🌐 Dominio: ${location.hostname}`);
+    try {
+      const ref = doc(db, '_test', 'ping');
+      await setDoc(ref, { ts: Timestamp.now(), by: user.email });
+      diagLog('✅ ESCRITURA exitosa en Firestore', 'ok');
+      const snap = await getDoc(ref);
+      diagLog(snap.exists() ? '✅ LECTURA exitosa en Firestore' : '⚠️ Documento no encontrado', snap.exists()?'ok':'warn');
+    } catch(e) {
+      diagLog(`❌ ERROR: ${e.code} — ${e.message}`, 'error');
+      if (e.code === 'permission-denied')
+        diagLog('👉 Solución: actualiza las Reglas en Firebase Console', 'warn');
+      if (e.code?.includes('auth'))
+        diagLog(`👉 Agrega "${location.hostname}" a dominios autorizados en Firebase Auth`, 'warn');
+    }
+  };
+
+  window.toggleDiag = () => {
+    const p = document.getElementById('diag-panel');
+    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+  };
+
+  let currentUser  = null;
+  let productos    = [];
+  let ventas       = [];
+
+  // ── PERMISOS ─────────────────────────────────────────────────────
+  const OWNER_EMAIL = 'giioniceman@gmail.com';
+  const DELETE_PIN  = '25252250';
+  // Cámara — sección Agregar
+  let barcodeBuffer  = "";
+  let barcodeTimeout = null;
+  // Cámara — sección Ventas
+  let ventaBarcodeBuffer  = "";
+  let ventaBarcodeTimeout = null;
+
+  // ── ESCÁNER INSTANTÁNEO ─────────────────────────────────────────
+  // Estrategia: BarcodeDetector nativo (WASM interno del SO) en Worker
+  // con fallback a ZXing modo stream directo. Sin confirmación doble,
+  // sin oversampling, loop de máxima frecuencia con micro-throttle.
+  function crearScanner() {
+    return {
+      active: false, stream: null, loopId: null,
+      zxingReader: null, flashOn: false, flashSupported: false,
+      _containerId: null, _btnId: null, _processing: false,
+
+      _beep() {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const o = ctx.createOscillator(), g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination);
+          o.frequency.value = 1900; o.type = 'sine';
+          g.gain.setValueAtTime(0.4, ctx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+          o.start(); o.stop(ctx.currentTime + 0.12);
+        } catch(e) {}
+      },
+
+      async _initFlash() {
+        try {
+          const track = this.stream?.getVideoTracks()[0];
+          const caps  = track?.getCapabilities?.() || {};
+          if (caps.torch) {
+            this.flashSupported = true;
+            const btn = document.getElementById('btn-flash-' + this._containerId);
+            if (btn) btn.style.display = 'inline-flex';
+          }
+        } catch(e) {}
+      },
+
+      async toggleFlash() {
+        if (!this.flashSupported || !this.stream) return;
+        this.flashOn = !this.flashOn;
+        const track = this.stream.getVideoTracks()[0];
+        try {
+          await track.applyConstraints({ advanced: [{ torch: this.flashOn }] });
+          const btn = document.getElementById('btn-flash-' + this._containerId);
+          if (btn) {
+            btn.textContent = this.flashOn ? '🔦 ON' : '🔦 Flash';
+            btn.classList.toggle('flash-on', this.flashOn);
+          }
+        } catch(e) { showToast('Flash no soportado', 'error'); }
+      },
+
+      // ── Loop con overlay verde en tiempo real ────────────────────────
+      _startNativeLoop(video, det, onDetected) {
+        const offscreen = new OffscreenCanvas(1, 1);
+        const offCtx    = offscreen.getContext('2d', { willReadFrequently: true });
+
+        // Canvas overlay encima del video (dibuja el polígono verde)
+        const overlay = document.getElementById('overlay-' + this._containerId);
+        const ovCtx   = overlay ? overlay.getContext('2d') : null;
+
+        let lastCode     = null;
+        let confirmCount = 0;
+        const CONFIRM    = 2;    // 2 frames consecutivos = confirmación (anti falsos positivos)
+        let failFrames   = 0;
+        let blurFrames   = 0;    // frames borrosos consecutivos (para indicador)
+        let lastBlurScore = 999;
+
+        // ZXing como motor auxiliar para códigos difíciles
+        let zxingAux = null;
+        const getZxingAux = async () => {
+          if (zxingAux) return zxingAux;
+          if (typeof ZXing === 'undefined') return null;
+          const hints = new Map([
+            [ZXing.DecodeHintType.TRY_HARDER, true],
+            [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+              ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
+              ZXing.BarcodeFormat.UPC_A,  ZXing.BarcodeFormat.UPC_E,
+              ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+              ZXing.BarcodeFormat.CODE_93,  ZXing.BarcodeFormat.ITF,
+              ZXing.BarcodeFormat.CODABAR,  ZXing.BarcodeFormat.QR_CODE,
+              ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417,
+              ZXing.BarcodeFormat.AZTEC,
+            ]],
+          ]);
+          zxingAux = new ZXing.BrowserMultiFormatReader(hints, 0);
+          return zxingAux;
+        };
+
+        // Dibuja el polígono alrededor del código en el canvas overlay
+        const drawBox = (barcode, vw, vh, confirmed) => {
+          if (!ovCtx || !overlay) return;
+          // Sincronizar tamaño canvas con el elemento DOM
+          overlay.width  = overlay.clientWidth  || overlay.offsetWidth  || vw;
+          overlay.height = overlay.clientHeight || overlay.offsetHeight || vh;
+          ovCtx.clearRect(0, 0, overlay.width, overlay.height);
+          if (!barcode || !barcode.cornerPoints || !barcode.cornerPoints.length) return;
+
+          const sx = overlay.width  / vw;
+          const sy = overlay.height / vh;
+          const pts = barcode.cornerPoints;
+
+          ovCtx.beginPath();
+          ovCtx.moveTo(pts[0].x * sx, pts[0].y * sy);
+          for (let i = 1; i < pts.length; i++) ovCtx.lineTo(pts[i].x * sx, pts[i].y * sy);
+          ovCtx.closePath();
+
+          const color = confirmed ? '#00FF88' : '#F5C842';
+          ovCtx.strokeStyle = color;
+          ovCtx.lineWidth   = confirmed ? 3.5 : 2.5;
+          ovCtx.shadowColor = color;
+          ovCtx.shadowBlur  = confirmed ? 14 : 8;
+          ovCtx.stroke();
+
+          // Relleno semitransparente
+          ovCtx.fillStyle = confirmed ? 'rgba(0,255,136,0.12)' : 'rgba(245,200,66,0.08)';
+          ovCtx.fill();
+
+          // Etiqueta del tipo de código encima del polígono
+          const minY = Math.min(...pts.map(p => p.y)) * sy;
+          const midX = pts.reduce((s,p) => s + p.x, 0) / pts.length * sx;
+          const label = barcode.format ? barcode.format.replace(/_/g,' ') : '';
+          if (label) {
+            ovCtx.font        = 'bold 11px sans-serif';
+            ovCtx.fillStyle   = confirmed ? '#00FF88' : '#F5C842';
+            ovCtx.shadowColor = '#000';
+            ovCtx.shadowBlur  = 4;
+            ovCtx.textAlign   = 'center';
+            ovCtx.fillText(label, midX, Math.max(14, minY - 6));
+          }
+        };
+
+        const clearBox = () => {
+          if (!ovCtx || !overlay) return;
+          ovCtx.clearRect(0, 0, overlay.width, overlay.height);
+        };
+
+        // Flash verde de confirmación (parpadeo rápido al leer)
+        const flashConfirm = () => {
+          if (!ovCtx || !overlay) return;
+          let n = 0;
+          const blink = setInterval(() => {
+            ovCtx.clearRect(0, 0, overlay.width, overlay.height);
+            if (n % 2 === 0) {
+              ovCtx.fillStyle = 'rgba(0,255,136,0.25)';
+              ovCtx.fillRect(0, 0, overlay.width, overlay.height);
+            }
+            if (++n >= 4) { clearInterval(blink); clearBox(); }
+          }, 60);
+        };
+
+        // Zonas de recorte en cascada optimizadas.
+        // Nuevas: zoom 3× y 4× para códigos muy pequeños,
+        // franjas delgadas rotadas, zona superior/inferior extrema.
+        const getCrops = (vw, vh) => {
+          const cx = Math.floor(vw*0.25), cy = Math.floor(vh*0.25);
+          const cw = Math.floor(vw*0.50), ch = Math.floor(vh*0.50);
+          return [
+            // ── Tira central (EAN-13 en posición normal) ────────────────
+            { sx:0,              sy:Math.floor(vh*.33), sw:vw,             sh:Math.floor(vh*.34), scale:1,   contrast:1.6, bright:1.05 },
+            // ── Centro ×2 (código pequeño o lejano) ────────────────────
+            { sx:cx,             sy:cy,                 sw:cw,             sh:ch,                 scale:2.0, contrast:1.5, bright:1.05 },
+            // ── Centro ×3 (código MUY pequeño — nueva) ─────────────────
+            { sx:Math.floor(vw*.33), sy:Math.floor(vh*.33), sw:Math.floor(vw*.34), sh:Math.floor(vh*.34), scale:3.0, contrast:1.8, bright:1.1  },
+            // ── Centro ×4 (código diminuto — nueva) ────────────────────
+            { sx:Math.floor(vw*.38), sy:Math.floor(vh*.38), sw:Math.floor(vw*.24), sh:Math.floor(vh*.24), scale:4.0, contrast:2.0, bright:1.1  },
+            // ── Contraste muy alto (superficies brillantes/curvas) ──────
+            { sx:0,              sy:Math.floor(vh*.20), sw:vw,             sh:Math.floor(vh*.60), scale:1,   contrast:2.5, bright:1.1  },
+            // ── Franja superior ──────────────────────────────────────────
+            { sx:0,              sy:Math.floor(vh*.04), sw:vw,             sh:Math.floor(vh*.32), scale:1,   contrast:1.6, bright:1.05 },
+            // ── Franja inferior ──────────────────────────────────────────
+            { sx:0,              sy:Math.floor(vh*.64), sw:vw,             sh:Math.floor(vh*.32), scale:1,   contrast:1.6, bright:1.05 },
+            // ── Cuadrante izquierdo (código no centrado) ─────────────────
+            { sx:0,              sy:Math.floor(vh*.20), sw:Math.floor(vw*.55), sh:Math.floor(vh*.60), scale:1.5, contrast:1.8, bright:1.05 },
+            // ── Cuadrante derecho ─────────────────────────────────────────
+            { sx:Math.floor(vw*.45), sy:Math.floor(vh*.20), sw:Math.floor(vw*.55), sh:Math.floor(vh*.60), scale:1.5, contrast:1.8, bright:1.05 },
+            // ── Peor caso: centro ×2 + contraste extremo ────────────────
+            { sx:cx,             sy:cy,                 sw:cw,             sh:ch,                 scale:2.0, contrast:3.0, bright:1.15 },
+          ];
+        };
+
+        const loop = async () => {
+          if (!this.active) return;
+
+          if (!this._processing && video.readyState >= 2 && video.videoWidth > 0) {
+            this._processing = true;
+            try {
+              const vw = video.videoWidth, vh = video.videoHeight;
+
+              // ── Detección de nitidez: omitir frames borrosos ──────────
+              // Solo calcular cada 3 frames para no saturar
+              if (failFrames % 3 === 0) {
+                offscreen.width  = Math.floor(vw / 4); // muestra reducida, más rápido
+                offscreen.height = Math.floor(vh / 4);
+                offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
+                lastBlurScore = calcBlurScore(offCtx, offscreen.width, offscreen.height);
+              }
+              // Umbral bajo = imagen muy borrosa, skip (ahorra ~30ms por frame)
+              if (lastBlurScore < 8 && failFrames < 60) {
+                blurFrames++;
+                this._processing = false;
+                this.loopId = setTimeout(loop, 32); // esperar más entre frames borrosos
+                return;
+              }
+              blurFrames = 0;
+
+              // Intento 1: frame completo directo
+              let found = await det.detect(video);
+
+              // Intento 1b: frame completo con contraste + brillo
+              if (!found.length) {
+                offscreen.width  = vw;
+                offscreen.height = vh;
+                offCtx.filter = 'contrast(1.9) brightness(1.08) saturate(0)';
+                offCtx.drawImage(video, 0, 0);
+                offCtx.filter = 'none';
+                found = await det.detect(offscreen);
+              }
+
+              // Intento 1c: ecualización de histograma (iluminación desigual) — nueva
+              if (!found.length) {
+                offscreen.width  = vw;
+                offscreen.height = vh;
+                offCtx.drawImage(video, 0, 0);
+                applyHistEq(offCtx, vw, vh);
+                found = await det.detect(offscreen);
+              }
+
+              // Intentos 2-N: recortes EN PARALELO con Promise.any()
+              if (!found.length) {
+                const cropPromises = getCrops(vw, vh).map(async z => {
+                  const dw = Math.floor(z.sw * z.scale);
+                  const dh = Math.floor(z.sh * z.scale);
+                  const oc  = new OffscreenCanvas(dw, dh);
+                  const oc_ctx = oc.getContext('2d', { willReadFrequently: true });
+                  oc_ctx.filter = `contrast(${z.contrast}) brightness(${z.bright||1.05}) saturate(0)`;
+                  oc_ctx.drawImage(video, z.sx, z.sy, z.sw, z.sh, 0, 0, dw, dh);
+                  oc_ctx.filter = 'none';
+                  const cropFound = await det.detect(oc);
+                  if (!cropFound.length) throw new Error('nf');
+                  const xs = z.sw / dw, ys = z.sh / dh;
+                  cropFound[0].cornerPoints = cropFound[0].cornerPoints.map(p => ({
+                    x: p.x * xs + z.sx,
+                    y: p.y * ys + z.sy,
+                  }));
+                  return cropFound;
+                });
+                try { found = await Promise.any(cropPromises); } catch(e) {}
+              }
+
+              if (found.length) {
+                failFrames = 0;
+                const code = found[0].rawValue;
+                if (code === lastCode) {
+                  confirmCount++;
+                } else {
+                  lastCode     = code;
+                  confirmCount = 1;
+                }
+
+                const confirmed = confirmCount >= CONFIRM;
+                drawBox(found[0], vw, vh, confirmed);
+
+                if (confirmed) {
+                  flashConfirm();
+                  this._beep();
+                  try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+                  onDetected(code);
+                  return; // Salir del loop
+                }
+              } else {
+                lastCode     = null;
+                confirmCount = 0;
+                clearBox();
+                // Si llevamos muchos frames fallidos, probar ZXing como motor alternativo
+                // Ahora con crops y filtros, no solo el video crudo
+                failFrames++;
+                if (failFrames > 20 && typeof ZXing !== 'undefined') {
+                  try {
+                    const zx = await getZxingAux();
+                    if (zx) {
+                      // Intentar primero con el video crudo
+                      let zxResult = null;
+                      try {
+                        const r = await zx.decodeFromVideoElement(video);
+                        if (r) zxResult = r.getText();
+                      } catch(e2) {}
+
+                      // Si falla, intentar con zoom 2× centro
+                      if (!zxResult) {
+                        try {
+                          const dw = Math.floor(vw * 0.5 * 2), dh = Math.floor(vh * 0.5 * 2);
+                          const zoc = new OffscreenCanvas(dw, dh);
+                          const zctx = zoc.getContext('2d');
+                          zctx.filter = 'contrast(2.0) saturate(0)';
+                          zctx.drawImage(video, Math.floor(vw*.25), Math.floor(vh*.25), Math.floor(vw*.5), Math.floor(vh*.5), 0, 0, dw, dh);
+                          zctx.filter = 'none';
+                          const blob = await zoc.convertToBlob({ type:'image/png' });
+                          const url  = URL.createObjectURL(blob);
+                          try {
+                            const r = await zx.decodeFromImageUrl(url);
+                            if (r) zxResult = r.getText();
+                          } finally { URL.revokeObjectURL(url); }
+                        } catch(e3) {}
+                      }
+
+                      if (zxResult) {
+                        failFrames = 0;
+                        flashConfirm();
+                        this._beep();
+                        try { navigator.vibrate?.([30, 10, 60]); } catch(e2) {}
+                        onDetected(zxResult);
+                        return;
+                      }
+                    }
+                  } catch(e2) {}
+                }
+              }
+            } catch(e) {}
+            this._processing = false;
+          }
+
+          this.loopId = setTimeout(loop, 16); // ~60fps cap, evita saturar el hilo principal
+        };
+
+        this.loopId = setTimeout(loop, 16);
+      },
+
+      async toggle({ videoId, containerId, btnId, onCode }) {
+        this._containerId = containerId;
+        this._btnId       = btnId;
+        if (this.active) { this.stop({ containerId, btnId }); return; }
+
+        this.active      = true;
+        this.flashOn     = false;
+        this._processing = false;
+        this.flashSupported = false;
+
+        document.getElementById(containerId).style.display = 'block';
+        document.getElementById(btnId).textContent = '⏹ Detener';
+
+        const video = document.getElementById(videoId);
+
+        const onDetected = (code) => {
+          if (!code || !code.trim()) return;
+          // beep y vibración ya ocurren en el loop al confirmar
+          onCode(code.trim());
+          this.stop({ containerId, btnId });
+        };
+
+        try {
+          // ── Pedir cámara: intentar máxima resolución primero ──────────
+          // Alta res = más píxeles por barra = mejor lectura de códigos pequeños.
+          // Fallback a 1280×720 si el dispositivo no soporta 1920×1080.
+          let stream = null;
+          const resList = [
+            { width: 1920, height: 1080 },
+            { width: 1280, height: 720  },
+          ];
+          for (const res of resList) {
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                  facingMode: { ideal: 'environment' },
+                  width:     { ideal: res.width  },
+                  height:    { ideal: res.height },
+                  frameRate: { ideal: 30, max: 60 },
+                }
+              });
+              break;
+            } catch(e) { stream = null; }
+          }
+          if (!stream) throw new Error('No se pudo acceder a la cámara');
+          this.stream = stream;
+          video.srcObject = this.stream;
+          video.setAttribute('playsinline', true);
+          await video.play();
+
+          // Activar autofocus continuo (mejora enormemente la nitidez)
+          try {
+            const track = this.stream.getVideoTracks()[0];
+            const caps  = track.getCapabilities?.() || {};
+            const adv   = {};
+            if (caps.focusMode?.includes('continuous')) adv.focusMode = 'continuous';
+            if (caps.zoom) adv.zoom = caps.zoom.min; // zoom mínimo = más campo visual
+            if (Object.keys(adv).length) {
+              await track.applyConstraints({ advanced: [adv] }).catch(() => {});
+            }
+          } catch(e) {}
+
+          await this._initFlash();
+
+          // ── RAMA 1: BarcodeDetector nativo (Chrome Android ≥ 83) ────
+          if ('BarcodeDetector' in window) {
+            // Pedir TODOS los formatos soportados (el SO elige el más rápido)
+            let formats;
+            try {
+              formats = await BarcodeDetector.getSupportedFormats();
+            } catch(e) {
+              formats = [
+                'ean_13','ean_8','upc_a','upc_e',
+                'code_128','code_39','code_93','itf','codabar',
+                'qr_code','data_matrix','pdf417','aztec'
+              ];
+            }
+            const det = new BarcodeDetector({ formats });
+            this._startNativeLoop(video, det, onDetected);
+
+          // ── RAMA 2: ZXing manual loop (Safari / iOS / Firefox) ──────────
+          // Reemplazamos decodeFromStream (sin procesamiento) por un loop
+          // manual con crops + filtros, igual de agresivo que el nativo.
+          } else {
+            let t = 0;
+            while (typeof ZXing === 'undefined' && t++ < 20) {
+              await new Promise(r => setTimeout(r, 200));
+            }
+            if (typeof ZXing === 'undefined') throw new Error('ZXing no disponible');
+
+            const hints = new Map([
+              [ZXing.DecodeHintType.TRY_HARDER, true],
+              [ZXing.DecodeHintType.ALSO_INVERTED, false],
+              [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+                ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
+                ZXing.BarcodeFormat.UPC_A,  ZXing.BarcodeFormat.UPC_E,
+                ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+                ZXing.BarcodeFormat.CODE_93,  ZXing.BarcodeFormat.ITF,
+                ZXing.BarcodeFormat.CODABAR,  ZXing.BarcodeFormat.QR_CODE,
+                ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417,
+                ZXing.BarcodeFormat.AZTEC,    ZXing.BarcodeFormat.RSS_14,
+                ZXing.BarcodeFormat.RSS_EXPANDED,
+              ]]
+            ]);
+            this.zxingReader = new ZXing.BrowserMultiFormatReader(hints, 0);
+            const zxReader = this.zxingReader;
+
+            // ── Loop manual ZXing con crops + filtros ────────────────────
+            const zxDecodeOC = async (oc) => {
+              const blob = await oc.convertToBlob({ type: 'image/png' });
+              const url  = URL.createObjectURL(blob);
+              try {
+                const r = await zxReader.decodeFromImageUrl(url);
+                return r ? r.getText() : null;
+              } catch(e) { return null; }
+              finally { URL.revokeObjectURL(url); }
+            };
+
+            const zxLoop = async () => {
+              if (!this.active) return;
+              if (!this._processing && video.readyState >= 2 && video.videoWidth > 0) {
+                this._processing = true;
+                try {
+                  const vw = video.videoWidth, vh = video.videoHeight;
+
+                  // Nitidez check
+                  const chkOC = new OffscreenCanvas(Math.floor(vw/4), Math.floor(vh/4));
+                  chkOC.getContext('2d').drawImage(video, 0, 0, chkOC.width, chkOC.height);
+                  const blurSc = calcBlurScore(chkOC.getContext('2d',{willReadFrequently:true}), chkOC.width, chkOC.height);
+                  if (blurSc < 8) {
+                    this._processing = false;
+                    this.loopId = setTimeout(zxLoop, 40);
+                    return;
+                  }
+
+                  // Lista de variantes a intentar (paralelo)
+                  const cx = Math.floor(vw*.25), cy = Math.floor(vh*.25);
+                  const cw = Math.floor(vw*.50), ch = Math.floor(vh*.50);
+                  const makeZxOC = (sx,sy,sw,sh,scale,contrast,bright,gray=true) => {
+                    const dw=Math.floor(sw*scale), dh=Math.floor(sh*scale);
+                    const oc=new OffscreenCanvas(dw,dh);
+                    const ctx=oc.getContext('2d');
+                    const f=[`contrast(${contrast})`,`brightness(${bright})`];
+                    if(gray) f.push('saturate(0)');
+                    ctx.filter=f.join(' ');
+                    ctx.drawImage(video,sx,sy,sw,sh,0,0,dw,dh);
+                    ctx.filter='none';
+                    return oc;
+                  };
+
+                  const tasks = [
+                    // Video crudo directo
+                    () => zxReader.decodeFromVideoElement(video).then(r=>r?r.getText():null).catch(()=>null),
+                    // Centro ×2 con escala de grises
+                    () => zxDecodeOC(makeZxOC(cx,cy,cw,ch,2,'2.0','1.05')),
+                    // Tira central
+                    () => zxDecodeOC(makeZxOC(0,Math.floor(vh*.33),vw,Math.floor(vh*.34),1,'1.8','1.05')),
+                    // Centro ×3
+                    () => zxDecodeOC(makeZxOC(Math.floor(vw*.33),Math.floor(vh*.33),Math.floor(vw*.34),Math.floor(vh*.34),3,'2.0','1.1')),
+                    // Contraste muy alto
+                    () => zxDecodeOC(makeZxOC(0,Math.floor(vh*.20),vw,Math.floor(vh*.60),1,'3.0','1.1')),
+                    // Franja superior
+                    () => zxDecodeOC(makeZxOC(0,Math.floor(vh*.04),vw,Math.floor(vh*.32),1,'1.8','1.05')),
+                    // Franja inferior
+                    () => zxDecodeOC(makeZxOC(0,Math.floor(vh*.64),vw,Math.floor(vh*.32),1,'1.8','1.05')),
+                  ];
+
+                  // Ejecutar en paralelo y tomar el primero con resultado
+                  const results = await Promise.all(tasks.map(t=>t()));
+                  const code = results.find(r => r && r.trim());
+
+                  if (code) {
+                    flashConfirm();
+                    this._beep();
+                    try { navigator.vibrate?.([30,10,60]); } catch(e) {}
+                    onDetected(code.trim());
+                    return;
+                  }
+                } catch(e) {}
+                this._processing = false;
+              }
+              this.loopId = setTimeout(zxLoop, 25); // ~40fps para ZXing
+            };
+
+            this.loopId = setTimeout(zxLoop, 25);
+          }
+
+        } catch(e) {
+          console.error('Scanner:', e);
+          showToast('No se pudo abrir la cámara: ' + (e.message || e), 'error');
+          this.stop({ containerId, btnId });
+        }
+      },
+
+      // ── CAPTURAR FOTO Y ANALIZAR (para códigos difíciles) ──────────
+      async capturarYAnalizar(videoId, previewId, statusId, onDetected) {
+        const video  = document.getElementById(videoId);
+        const prevEl = document.getElementById(previewId);
+        const statEl = document.getElementById(statusId);
+        const wrap   = prevEl ? prevEl.closest('.foto-wrap') : null;
+        const fotoBtnId = statusId === 'foto-stat-agregar' ? 'btn-foto-agregar' : 'btn-foto-venta';
+        const fotoBtn   = document.getElementById(fotoBtnId);
+
+        if (!this.active || !this.stream || !video) {
+          if (statEl) statEl.innerHTML = '<span class="fail">⚠️ Primero activa la cámara</span>';
+          if (wrap) wrap.classList.add('visible');
+          setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2500);
+          return;
+        }
+
+        if (fotoBtn) fotoBtn.disabled = true;
+        if (statEl) statEl.innerHTML = '<span class="spin">Capturando…</span>';
+        if (wrap) wrap.classList.add('visible');
+
+        // ── 1. Capturar frame de máxima calidad ──────────────────────
+        let img = null;
+        const track = this.stream?.getVideoTracks()[0];
+        if (track && typeof ImageCapture !== 'undefined') {
+          try { img = await new ImageCapture(track).grabFrame(); } catch(e) {}
+        }
+        if (!img) {
+          const W2 = video.videoWidth, H2 = video.videoHeight;
+          if (!W2 || !H2) {
+            if (statEl) statEl.innerHTML = '<span class="fail">❌ Cámara no lista</span>';
+            if (fotoBtn) fotoBtn.disabled = false;
+            setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2000);
+            return;
+          }
+          const tmp = new OffscreenCanvas(W2, H2);
+          tmp.getContext('2d').drawImage(video, 0, 0);
+          img = await createImageBitmap(tmp);
+        }
+
+        const W = img.width, H = img.height;
+
+        // ── 2. Miniatura ──────────────────────────────────────────────
+        if (prevEl) {
+          const th = Math.min(80, Math.round(H * 110 / W));
+          const tw = Math.round(W * th / H);
+          prevEl.width = tw; prevEl.height = th;
+          prevEl.getContext('2d').drawImage(img, 0, 0, tw, th);
+        }
+        if (statEl) statEl.innerHTML = '<span class="spin">Analizando…</span>';
+
+        // ── 3. Helpers ────────────────────────────────────────────────
+
+        // makeOC: recorte + escala + filtros + padding blanco + rotación + sharpening real
+        const makeOC = ({ cx=0, cy=0, cw=W, ch=H, scale=1,
+                          contrast=1, brightness=1, invert=false,
+                          gray=false, sharpen=false, rotate=0, pad=0,
+                          threshold=false, histEq=false,
+                          sharpenAmount=1.2 } = {}) => {
+          const dw = Math.round(cw * scale), dh = Math.round(ch * scale);
+          const rotated = rotate === 90 || rotate === 270;
+          const base = new OffscreenCanvas(rotated ? dh : dw, rotated ? dw : dh);
+          const bctx = base.getContext('2d', { willReadFrequently: true });
+          const f = [];
+          if (gray)            f.push('grayscale(1)');
+          if (contrast  !== 1) f.push(`contrast(${contrast})`);
+          if (brightness!== 1) f.push(`brightness(${brightness})`);
+          if (invert)          f.push('invert(1)');
+          if (f.length) bctx.filter = f.join(' ');
+          if (rotate !== 0) {
+            bctx.translate(base.width/2, base.height/2);
+            bctx.rotate(rotate * Math.PI / 180);
+            bctx.drawImage(img, cx, cy, cw, ch, -dw/2, -dh/2, dw, dh);
+          } else {
+            bctx.drawImage(img, cx, cy, cw, ch, 0, 0, dw, dh);
+          }
+          bctx.filter = 'none';
+
+          // Ecualización de histograma (nueva)
+          if (histEq) applyHistEq(bctx, base.width, base.height);
+
+          // Sharpening por convolución real (nueva — mucho mejor que CSS filter)
+          if (sharpen) applySharpening(bctx, base.width, base.height, sharpenAmount);
+
+          // Binarización: Otsu (adaptivo) en lugar de umbral fijo 128
+          if (threshold) {
+            const id = bctx.getImageData(0, 0, base.width, base.height);
+            applyOtsu(id);
+            bctx.putImageData(id, 0, 0);
+          }
+
+          if (!pad) return base;
+          const padded = new OffscreenCanvas(base.width + pad*2, base.height + pad*2);
+          const pctx = padded.getContext('2d');
+          pctx.fillStyle = '#FFFFFF';
+          pctx.fillRect(0, 0, padded.width, padded.height);
+          pctx.drawImage(base, pad, pad);
+          return padded;
+        };
+
+        const ocToUrl = async (oc) => {
+          const blob = await oc.convertToBlob({ type: 'image/png' });
+          return URL.createObjectURL(blob);
+        };
+
+        // BarcodeDetector
+        let _det = null;
+        const _initDet = async () => {
+          if (_det) return _det;
+          if (!('BarcodeDetector' in window)) throw new Error('no BD');
+          let fmts;
+          try { fmts = await BarcodeDetector.getSupportedFormats(); }
+          catch(e) { fmts = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39',
+                              'code_93','itf','codabar','qr_code','data_matrix','pdf417','aztec']; }
+          _det = new BarcodeDetector({ formats: fmts }); return _det;
+        };
+        const tryDet = async (src) => {
+          const d = await _initDet();
+          const r = await d.detect(src);
+          if (!r.length) throw new Error('nf');
+          return r[0].rawValue;
+        };
+
+        // ZXing via blob URL
+        const ZX_FMTS = typeof ZXing !== 'undefined' ? [
+          ZXing.BarcodeFormat.EAN_13,   ZXing.BarcodeFormat.EAN_8,
+          ZXing.BarcodeFormat.UPC_A,    ZXing.BarcodeFormat.UPC_E,
+          ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+          ZXing.BarcodeFormat.CODE_93,  ZXing.BarcodeFormat.ITF,
+          ZXing.BarcodeFormat.CODABAR,  ZXing.BarcodeFormat.QR_CODE,
+          ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417,
+          ZXing.BarcodeFormat.AZTEC,    ZXing.BarcodeFormat.RSS_14,
+          ZXing.BarcodeFormat.RSS_EXPANDED,
+        ] : [];
+        const tryZX = async (oc) => {
+          if (typeof ZXing === 'undefined') throw new Error('no ZXing');
+          const url = await ocToUrl(oc);
+          const hints = new Map([
+            [ZXing.DecodeHintType.TRY_HARDER, true],
+            [ZXing.DecodeHintType.POSSIBLE_FORMATS, ZX_FMTS],
+          ]);
+          const rdr = new ZXing.BrowserMultiFormatReader(hints);
+          try {
+            const res = await rdr.decodeFromImageUrl(url);
+            if (!res) throw new Error('nf');
+            return res.getText();
+          } finally { try { rdr.reset(); } catch(e) {} URL.revokeObjectURL(url); }
+        };
+
+        // ── 4. Estrategias (~70) ──────────────────────────────────────
+        const PAD = 50;
+        const cx4 = Math.round(W*0.15), cy4 = Math.round(H*0.15);
+        const cw4 = Math.round(W*0.70), ch4 = Math.round(H*0.70);
+        // Zoom extremo para códigos muy pequeños
+        const cx5 = Math.round(W*0.30), cy5 = Math.round(H*0.30);
+        const cw5 = Math.round(W*0.40), ch5 = Math.round(H*0.40);
+
+        // Franjas horizontales estrechas (superficies curvas/metálicas)
+        const strips = [];
+        for (let pct = 0.15; pct <= 0.75; pct += 0.08) {
+          const sy = Math.round(H * pct);
+          const sh = Math.round(H * 0.22);
+          strips.push(() => tryDet(makeOC({ cy:sy, ch:sh, pad:PAD })));
+          strips.push(() => tryDet(makeOC({ cy:sy, ch:sh, pad:PAD, contrast:2.5, gray:true })));
+          strips.push(() => tryDet(makeOC({ cy:sy, ch:sh, pad:PAD, threshold:true })));          // Otsu
+          strips.push(() => tryDet(makeOC({ cy:sy, ch:sh, pad:PAD, sharpen:true, contrast:2.0, gray:true }))); // Sharpen real
+          strips.push(() => tryZX(makeOC({ cy:sy, ch:sh, pad:PAD, contrast:2.0, gray:true })));
+          strips.push(() => tryZX(makeOC({ cy:sy, ch:sh, pad:PAD, threshold:true, sharpen:true }))); // ZX+Otsu+Sharpen
+        }
+
+        const strats = [
+          // ── Imagen completa — variantes básicas ──────────────────────
+          () => tryDet(img),
+          () => tryDet(makeOC({ pad:PAD })),
+          () => tryDet(makeOC({ pad:PAD, gray:true, contrast:2.0 })),
+          () => tryDet(makeOC({ pad:PAD, contrast:3.5, gray:true })),
+          () => tryDet(makeOC({ pad:PAD, threshold:true })),                       // Otsu
+          () => tryDet(makeOC({ pad:PAD, invert:true })),
+          () => tryDet(makeOC({ pad:PAD, invert:true, threshold:true })),
+          () => tryDet(makeOC({ pad:PAD, sharpen:true, gray:true })),              // Sharpen real
+          () => tryDet(makeOC({ pad:PAD, histEq:true, gray:true })),               // Hist Eq (nueva)
+          () => tryDet(makeOC({ pad:PAD, histEq:true, threshold:true })),          // HistEq+Otsu (nueva)
+          () => tryDet(makeOC({ pad:PAD, sharpen:true, threshold:true })),         // Sharpen+Otsu (nueva)
+          () => tryDet(makeOC({ pad:PAD, sharpen:true, histEq:true, threshold:true })), // todo junto (nueva)
+          () => tryDet(makeOC({ pad:PAD, sharpenAmount:2.5, sharpen:true, gray:true })), // sharpen agresivo (nueva)
+
+          // ── Zoom centro ×1.5 ──────────────────────────────────────────
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD })),
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD, gray:true, contrast:2.5 })),
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD, threshold:true })),
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD, sharpen:true, gray:true })), // nueva
+
+          // ── Zoom ×2 ───────────────────────────────────────────────────
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, pad:PAD, gray:true, contrast:2.5 })),
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, pad:PAD, threshold:true })),
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, pad:PAD, sharpen:true, threshold:true })), // nueva
+
+          // ── Zoom ×3 — código pequeño ─────────────────────────────────  (nueva)
+          () => tryDet(makeOC({ cx:cx5, cy:cy5, cw:cw5, ch:ch5, scale:3.0, pad:PAD, gray:true, contrast:2.0 })),
+          () => tryDet(makeOC({ cx:cx5, cy:cy5, cw:cw5, ch:ch5, scale:3.0, pad:PAD, threshold:true })),
+          () => tryDet(makeOC({ cx:cx5, cy:cy5, cw:cw5, ch:ch5, scale:3.0, pad:PAD, sharpen:true, gray:true })),
+
+          // ── Zoom ×4 — código diminuto ─────────────────────────────────  (nueva)
+          () => tryDet(makeOC({ cx:Math.round(W*.38), cy:Math.round(H*.38), cw:Math.round(W*.24), ch:Math.round(H*.24), scale:4.0, pad:PAD, gray:true, contrast:2.5 })),
+          () => tryDet(makeOC({ cx:Math.round(W*.38), cy:Math.round(H*.38), cw:Math.round(W*.24), ch:Math.round(H*.24), scale:4.0, pad:PAD, threshold:true, sharpen:true })),
+
+          // ── Rotaciones (etiquetas torcidas) ──────────────────────────
+          () => tryDet(makeOC({ rotate:90,  pad:PAD })),
+          () => tryDet(makeOC({ rotate:180, pad:PAD })),
+          () => tryDet(makeOC({ rotate:270, pad:PAD })),
+          () => tryDet(makeOC({ rotate:90,  pad:PAD, threshold:true })),           // nueva
+          () => tryDet(makeOC({ rotate:270, pad:PAD, threshold:true })),           // nueva
+
+          // ── ZXing — imagen completa ────────────────────────────────────
+          () => tryZX(makeOC({ pad:PAD })),
+          () => tryZX(makeOC({ pad:PAD, gray:true, contrast:2.5 })),
+          () => tryZX(makeOC({ pad:PAD, threshold:true })),
+          () => tryZX(makeOC({ pad:PAD, invert:true })),
+          () => tryZX(makeOC({ pad:PAD, invert:true, threshold:true })),
+          () => tryZX(makeOC({ pad:PAD, sharpen:true, gray:true })),               // nueva
+          () => tryZX(makeOC({ pad:PAD, histEq:true, threshold:true })),           // nueva
+          () => tryZX(makeOC({ pad:PAD, sharpen:true, threshold:true })),          // nueva
+
+          // ── ZXing — zoom ──────────────────────────────────────────────
+          () => tryZX(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD })),
+          () => tryZX(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD, threshold:true })),
+          () => tryZX(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, pad:PAD, sharpen:true, gray:true })), // nueva
+          () => tryZX(makeOC({ cx:cx5, cy:cy5, cw:cw5, ch:ch5, scale:3.0, pad:PAD, threshold:true })),          // nueva
+
+          // ── ZXing — rotaciones ─────────────────────────────────────────
+          () => tryZX(makeOC({ rotate:90,  pad:PAD })),
+          () => tryZX(makeOC({ rotate:90,  pad:PAD, threshold:true })),            // nueva
+          () => tryZX(makeOC({ rotate:270, pad:PAD, threshold:true })),            // nueva
+
+          // ── Franjas estrechas (superficies curvas) ────────────────────
+          ...strips,
+        ];
+
+        // ── 5. Paralelo — primer ganador ──────────────────────────────
+        try {
+          const code = await Promise.any(strats.map(s => s()));
+          this._beep();
+          try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+          if (statEl) statEl.innerHTML = `<span class="ok">✓ ${code}</span>`;
+          onDetected(code.trim());
+          setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2200);
+        } catch(e) {
+          // ── Fallback manual: mostrar input para que el usuario escriba el código ──
+          this._mostrarFallbackManual(wrap, statEl, prevEl, onDetected);
+        } finally {
+          if (fotoBtn) fotoBtn.disabled = false;
+        }
+      },
+
+      // Fallback: si ninguna estrategia detectó el código, mostrar input manual
+      _mostrarFallbackManual(wrap, statEl, prevEl, onDetected) {
+        if (!statEl) return;
+        const uid = 'fb-' + Date.now();
+        statEl.innerHTML = `
+          <div style="font-size:.78rem;color:var(--text);margin-bottom:6px">
+            ❌ No se detectó — <b>escribe el código</b> que ves en la etiqueta:
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input id="${uid}" type="text" inputmode="numeric"
+              placeholder="Ej: 7501234567890"
+              style="flex:1;background:var(--surface);border:1.5px solid var(--accent);border-radius:8px;padding:8px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif;min-width:0"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('${uid}-ok').click()}"/>
+            <button id="${uid}-ok"
+              style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:.85rem;cursor:pointer;white-space:nowrap;font-family:'Syne',sans-serif"
+              onclick="(function(){
+                const v=document.getElementById('${uid}').value.trim();
+                if(!v){return;}
+                document.getElementById('${uid}').closest('.foto-wrap').classList.remove('visible');
+              })()">OK</button>
+          </div>`;
+        // Listener en el botón OK (no podemos usar closures en onclick inline con variables locales)
+        setTimeout(() => {
+          const btn = document.getElementById(uid + '-ok');
+          if (!btn) return;
+          btn.addEventListener('click', () => {
+            const val = document.getElementById(uid)?.value.trim();
+            if (!val) return;
+            this._beep();
+            try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+            onDetected(val);
+            if (wrap) { wrap.classList.remove('visible'); }
+          });
+          // Auto-focus al input
+          document.getElementById(uid)?.focus();
+        }, 80);
+      },
+
+
+      stop({ containerId, btnId }) {
+        this.active      = false;
+        this._processing = false;
+
+        if (this.loopId !== null) { clearTimeout(this.loopId); this.loopId = null; }
+
+        if (this.stream) {
+          try {
+            this.stream.getVideoTracks()[0]
+              ?.applyConstraints({ advanced: [{ torch: false }] })
+              .catch(() => {});
+          } catch(e) {}
+          this.stream.getTracks().forEach(t => t.stop());
+          this.stream = null;
+        }
+
+        if (this.zxingReader) {
+          try { this.zxingReader.reset(); } catch(e) {}
+          this.zxingReader = null;
+        }
+
+        const video = document.querySelector('#' + containerId + ' video');
+        if (video) { video.srcObject = null; }
+
+        const c = document.getElementById(containerId);
+        if (c) c.style.display = 'none';
+
+        const b = document.getElementById(btnId);
+        if (b) b.textContent = '📷 Escanear';
+
+        const fb = document.getElementById('btn-flash-' + containerId);
+        if (fb) {
+          fb.style.display = 'none';
+          fb.textContent = '🔦 Flash';
+          fb.classList.remove('flash-on');
+        }
+        this.flashSupported = false;
+        this.flashOn = false;
+
+        // Limpiar overlay canvas
+        const ov = document.getElementById('overlay-' + containerId);
+        if (ov) { const c = ov.getContext('2d'); if (c) c.clearRect(0,0,ov.width,ov.height); }
+      }
+    };
+  }
+  const scannerAgregar = crearScanner();
+  const scannerVentas  = crearScanner();
+  window._scannerAgregar = scannerAgregar;
+  window._scannerVentas  = scannerVentas;
+
+  // ── AUTH ──────────────────────────────────────────────────────────
+  onAuthStateChanged(auth, user => {
+    if (user) {
+      currentUser = user;
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app-screen').style.display   = 'flex';
+      document.getElementById('user-email').textContent = user.email;
+      loadProductos();
+      loadVentas();
+    } else {
+      currentUser = null;
+      scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+      scannerVentas.stop({ containerId:'camera-container-venta', btnId:'btn-camara-venta' });
+      document.getElementById('login-screen').style.display = 'flex';
+      document.getElementById('app-screen').style.display   = 'none';
+    }
+  });
+
+  window.doLogin = async () => {
+    const email = document.getElementById('login-email').value.trim();
+    const pass  = document.getElementById('login-pass').value;
+    const btn   = document.getElementById('login-btn');
+    const err   = document.getElementById('login-error');
+    err.textContent = ''; btn.textContent = 'Entrando...'; btn.disabled = true;
+    try { await signInWithEmailAndPassword(auth, email, pass); }
+    catch(e) { err.textContent = 'Correo o contraseña incorrectos'; btn.textContent = 'Entrar'; btn.disabled = false; }
+  };
+
+  window.doLogout = async () => {
+    scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+    scannerVentas.stop({ containerId:'camera-container-venta', btnId:'btn-camara-venta' });
+    await signOut(auth);
+  };
+
+  // ── NAV ───────────────────────────────────────────────────────────
+  window.showTab = (tab) => {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
+    if (tab !== 'agregar') scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+    if (tab !== 'ventas')  scannerVentas.stop({ containerId:'camera-container-venta', btnId:'btn-camara-venta' });
+    if (tab === 'stock')     renderStock();
+    if (tab === 'ventas')    renderVentas();
+    if (tab === 'dashboard') renderDashboard();
+    // Conectar búsqueda de ventas cuando se activa la pestaña
+    if (tab === 'ventas') {
+      const vs = document.getElementById('ventas-search');
+      if (vs && !vs._wired) { vs._wired = true; vs.addEventListener('input', renderVentas); }
+      const vf = document.getElementById('ventas-filtro');
+      if (vf && !vf._wired) { vf._wired = true; vf.addEventListener('change', renderVentas); }
+    }
+  };
+
+  // ── PRODUCTOS — colección COMPARTIDA (sin filtro por usuario) ──────
+  function loadProductos() {
+    const q = query(collection(db, 'productos'), orderBy('nombre'));
+    onSnapshot(q, snap => {
+      setConnStatus(true);
+      productos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderStock();
+      renderProductoSelects();
+      renderDashboard();
+    }, err => {
+      console.error('Firestore productos:', err);
+      setConnStatus(false);
+      if (err.code === 'permission-denied')
+        showToast('⚠️ Reglas de Firestore: actualiza en Firebase Console', 'error');
+      else
+        showToast('Sin conexión — mostrando datos en caché', 'error');
+    });
+  }
+
+  // ── Estado del formulario de agregar ─────────────────────────────
+  let productoEncontrado = null; // producto existente detectado
+  let modoCompra = 'lote'; // 'lote' | 'pieza'
+
+  function limpiarFormAgregar() {
+    ['p-nombre','p-codigo','p-costo-total','p-piezas','p-precio-venta','p-stock','p-piezas-extra'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    document.getElementById('costo-pieza-preview').textContent = '';
+    document.getElementById('scan-result-text').textContent    = '';
+    productoEncontrado = null;
+    mostrarModoFormulario('nuevo');
+    scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
+  }
+
+  // Cambia entre modo "nuevo producto" y modo "producto encontrado"
+  function mostrarModoFormulario(modo) {
+    const secNuevo     = document.getElementById('form-nuevo-producto');
+    const secExistente = document.getElementById('form-producto-existente');
+    if (modo === 'existente') {
+      secNuevo.style.display     = 'none';
+      secExistente.style.display = 'block';
+    } else {
+      secNuevo.style.display     = 'block';
+      secExistente.style.display = 'none';
+    }
+  }
+
+  // Verifica si el código/nombre ya existe al escribir o escanear
+  function verificarExistencia() {
+    const codigo = document.getElementById('p-codigo').value.trim();
+    const nombre = document.getElementById('p-nombre').value.trim();
+    const existe = productos.find(p => {
+      const mismoCodigo = codigo && p.codigo && p.codigo.trim() === codigo;
+      const mismoNombre = nombre && p.nombre.toLowerCase() === nombre.toLowerCase();
+      return mismoCodigo || mismoNombre;
+    });
+    if (existe) {
+      productoEncontrado = existe;
+      document.getElementById('encontrado-nombre').textContent  = existe.nombre;
+      document.getElementById('encontrado-codigo').textContent  = existe.codigo || 'Sin código';
+      document.getElementById('encontrado-stock').textContent   = existe.stock || 0;
+      document.getElementById('encontrado-precio').textContent  = '$' + (existe.precioVenta||0).toFixed(2);
+      document.getElementById('p-piezas-extra').value           = '';
+      mostrarModoFormulario('existente');
+    } else {
+      productoEncontrado = null;
+      mostrarModoFormulario('nuevo');
+    }
+  }
+  window.verificarExistencia = verificarExistencia;
+
+  // Confirmar agregar piezas a producto existente
+  window.confirmarAgregarStock = async () => {
+    if (!productoEncontrado) return;
+    const extra = parseInt(document.getElementById('p-piezas-extra').value);
+    if (!extra || extra <= 0) { showToast('Escribe cuántas piezas vas a agregar', 'error'); return; }
+    const nuevoStock = (productoEncontrado.stock || 0) + extra;
+    await updateDoc(doc(db, 'productos', productoEncontrado.id), { stock: nuevoStock });
+    showToast(`✓ ${productoEncontrado.nombre}: ${productoEncontrado.stock} + ${extra} = ${nuevoStock} pzas`);
+    limpiarFormAgregar();
+  };
+
+  window.cancelarExistente = () => {
+    limpiarFormAgregar();
+  };
+
+  window.agregarProducto = async () => {
+    const nombre      = document.getElementById('p-nombre').value.trim();
+    const codigo      = document.getElementById('p-codigo').value.trim();
+    const precioVenta = parseFloat(document.getElementById('p-precio-venta').value);
+    const stock       = parseInt(document.getElementById('p-stock').value);
+    let costoTotal, piezas, costoPieza;
+
+    if (modoCompra === 'lote') {
+      costoTotal = parseFloat(document.getElementById('p-costo-total').value);
+      piezas     = parseInt(document.getElementById('p-piezas').value);
+      if (!nombre || !costoTotal || !piezas || !precioVenta || isNaN(stock)) {
+        showToast('Llena todos los campos obligatorios', 'error'); return;
+      }
+      costoPieza = costoTotal / piezas;
+    } else {
+      // Modo pieza: el costo ingresado ES el costo por pieza
+      costoPieza = parseFloat(document.getElementById('p-costo-total').value);
+      piezas     = stock;
+      costoTotal = costoPieza * piezas;
+      if (!nombre || !costoPieza || !precioVenta || isNaN(stock) || stock <= 0) {
+        showToast('Llena todos los campos obligatorios', 'error'); return;
+      }
+    }
+    const ganancia = precioVenta - costoPieza;
+
+    // Doble check por si escribe sin escanear
+    const existe = productos.find(p => {
+      const mismoCodigo = codigo && p.codigo && p.codigo.trim() === codigo;
+      const mismoNombre = p.nombre.toLowerCase() === nombre.toLowerCase();
+      return mismoCodigo || mismoNombre;
+    });
+    if (existe) {
+      productoEncontrado = existe;
+      document.getElementById('encontrado-nombre').textContent  = existe.nombre;
+      document.getElementById('encontrado-codigo').textContent  = existe.codigo || 'Sin código';
+      document.getElementById('encontrado-stock').textContent   = existe.stock || 0;
+      document.getElementById('encontrado-precio').textContent  = '$' + (existe.precioVenta||0).toFixed(2);
+      document.getElementById('p-piezas-extra').value           = stock || '';
+      mostrarModoFormulario('existente');
+      showToast('Este producto ya existe — confirma las piezas a sumar', 'error');
+      return;
+    }
+    await addDoc(collection(db, 'productos'), {
+      nombre, codigo, costoTotal, piezas, costoPieza, precioVenta, ganancia, stock,
+      creadoEn: Timestamp.now()
+    });
+    limpiarFormAgregar();
+    showToast('Producto nuevo guardado ✓');
+  };
+
+  window.eliminarProducto = async (id) => {
+    if (!confirm('¿Eliminar este producto?')) return;
+    await deleteDoc(doc(db, 'productos', id));
+    showToast('Producto eliminado');
+  };
+
+  window.editarStock = async (id, delta) => {
+    const p = productos.find(x => x.id === id);
+    if (!p) return;
+    await updateDoc(doc(db, 'productos', id), { stock: Math.max(0, (p.stock||0) + delta) });
+  };
+
+  function renderStock() {
+    const search   = (document.getElementById('stock-search')?.value || '').toLowerCase();
+    const filtered = productos.filter(p =>
+      p.nombre.toLowerCase().includes(search) || (p.codigo||'').toLowerCase().includes(search)
+    );
+    const cont = document.getElementById('stock-list');
+    if (!cont) return;
+    if (!filtered.length) { cont.innerHTML = '<div class="empty-state">No hay productos en stock</div>'; return; }
+    const esOwner = currentUser && currentUser.email === OWNER_EMAIL;
+    cont.innerHTML = filtered.map(p => `
+      <div class="stock-card ${p.stock<=5?'low-stock':''}">
+        <div class="stock-card-header">
+          <div>
+            <div class="stock-name">${p.nombre}</div>
+            <div class="stock-code">${p.codigo?'# '+p.codigo:'Sin código'}</div>
+          </div>
+          <div class="stock-badge ${p.stock<=5?'badge-red':'badge-green'}">${p.stock} pzas</div>
+        </div>
+        <div class="stock-info">
+          <span>Costo/pza: <b>$${(p.costoPieza||0).toFixed(2)}</b></span>
+          <span>Venta: <b>$${(p.precioVenta||0).toFixed(2)}</b></span>
+          <span class="ganancia">Ganancia: $${(p.ganancia||0).toFixed(2)}</span>
+        </div>
+        ${esOwner ? `
+        <div class="stock-actions">
+          <button class="btn-icon" onclick="editarStock('${p.id}',-1)">−</button>
+          <button class="btn-icon" onclick="editarStock('${p.id}',1)">+</button>
+          <button class="btn-icon btn-danger" onclick="eliminarProducto('${p.id}')">🗑</button>
+        </div>` : ''}
+      </div>`).join('');
+  }
+
+  function renderProductoSelects() {
+    const sel = document.getElementById('venta-producto');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Selecciona producto —</option>' +
+      productos.map(p => `<option value="${p.id}">${p.nombre} ($${(p.precioVenta||0).toFixed(2)})</option>`).join('');
+  }
+
+  // ── VENTAS ────────────────────────────────────────────────────────
+  function loadVentas() {
+    const q = query(collection(db, 'ventas'), orderBy('fecha','desc'));
+    onSnapshot(q, snap => {
+      setConnStatus(true);
+      ventas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderVentas();
+      renderDashboard();
+    }, err => {
+      console.error('Firestore ventas:', err);
+      setConnStatus(false);
+    });
+  }
+
+  window.onProductoChange = () => {
+    const p = productos.find(x => x.id === document.getElementById('venta-producto').value);
+    if (p) document.getElementById('venta-precio').value = p.precioVenta;
+  };
+
+  window.registrarVenta = async () => {
+    const pid      = document.getElementById('venta-producto').value;
+    const cantidad = parseInt(document.getElementById('venta-cantidad').value);
+    const tipo     = document.getElementById('venta-tipo').value;
+    const cliente  = document.getElementById('venta-cliente').value.trim();
+    if (!pid || !cantidad) { showToast('Selecciona producto y cantidad','error'); return; }
+    const p = productos.find(x => x.id === pid);
+    if (!p) return;
+    if (p.stock < cantidad) { showToast('Stock insuficiente','error'); return; }
+    await addDoc(collection(db, 'ventas'), {
+      productoId: pid, productoNombre: p.nombre, cantidad,
+      precioUnitario: p.precioVenta, costoUnitario: p.costoPieza,
+      total: p.precioVenta*cantidad, gananciaTotal: p.ganancia*cantidad,
+      costoTotal: p.costoPieza*cantidad, tipo, cliente,
+      fecha: Timestamp.now(), vendedor: currentUser.email
+    });
+    await updateDoc(doc(db,'productos',pid), { stock: p.stock - cantidad });
+    document.getElementById('venta-producto').value = '';
+    document.getElementById('venta-cantidad').value = '1';
+    document.getElementById('venta-cliente').value  = '';
+    document.getElementById('venta-tipo').value     = 'venta';
+    document.getElementById('venta-precio').value   = '';
+    showToast(tipo==='debe'?`Debe registrado (${cliente||'cliente'}) ✓`:'Venta registrada ✓');
+  };
+
+  function renderVentas() {
+    const cont   = document.getElementById('ventas-list');
+    if (!cont) return;
+    const filtro   = document.getElementById('ventas-filtro')?.value || 'hoy';
+    const busqueda = (document.getElementById('ventas-search')?.value || '').toLowerCase().trim();
+    const hoy    = new Date(); hoy.setHours(0,0,0,0);
+    let filtered = ventas;
+    if (filtro==='hoy')    filtered = ventas.filter(v => v.fecha?.toDate() >= hoy);
+    if (filtro==='semana') { const s=new Date(hoy); s.setDate(s.getDate()-7); filtered=ventas.filter(v=>v.fecha?.toDate()>=s); }
+    if (filtro==='mes')    { const m=new Date(hoy); m.setDate(m.getDate()-30); filtered=ventas.filter(v=>v.fecha?.toDate()>=m); }
+    // Filtro por nombre de producto o cliente
+    if (busqueda) filtered = filtered.filter(v =>
+      (v.productoNombre||'').toLowerCase().includes(busqueda) ||
+      (v.cliente||'').toLowerCase().includes(busqueda)
+    );
+    if (!filtered.length) {
+      cont.innerHTML = busqueda
+        ? `<div class="empty-state">Sin resultados para "${busqueda}"</div>`
+        : '<div class="empty-state">Sin ventas en este período</div>';
+      return;
+    }
+
+    // Resumen del período
+    const totalEfectivo = filtered.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
+    const totalDebes    = filtered.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
+    const totalGanancia = filtered.reduce((a,v)=>a+(v.gananciaTotal||0),0);
+    const nVentas = filtered.filter(v=>v.tipo==='venta').length;
+    const nDebes  = filtered.filter(v=>v.tipo==='debe').length;
+
+    cont.innerHTML = `
+      <div class="periodo-resumen">
+        <div class="periodo-item">
+          <span class="periodo-label">💵 Efectivo</span>
+          <span class="periodo-val green">$${totalEfectivo.toFixed(2)}</span>
+          <span class="periodo-sub">${nVentas} ventas</span>
+        </div>
+        <div class="periodo-item">
+          <span class="periodo-label">💳 Debes</span>
+          <span class="periodo-val orange">$${totalDebes.toFixed(2)}</span>
+          <span class="periodo-sub">${nDebes} registros</span>
+        </div>
+        <div class="periodo-item">
+          <span class="periodo-label">📈 Ganancia</span>
+          <span class="periodo-val green">$${totalGanancia.toFixed(2)}</span>
+          <span class="periodo-sub">${filtered.length} total</span>
+        </div>
+      </div>` +
+    filtered.map(v => {
+      const f = v.fecha?.toDate();
+      const fs= f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
+      const esOwner = currentUser && currentUser.email === OWNER_EMAIL;
+      const btnDel  = esOwner ? `<button class="btn-del-venta" onclick="solicitarEliminarVenta('${v.id}','${v.productoNombre.replace(/'/g,"\\'")}')">🗑</button>` : '';
+      return `<div class="venta-card ${v.tipo==='debe'?'venta-debe':''}">
+        <div class="venta-header">
+          <span class="venta-nombre">${v.productoNombre}</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="venta-badge ${v.tipo==='debe'?'badge-orange':'badge-blue'}">${v.tipo==='debe'?'💳 DEBE':'✅ VENTA'}</span>
+            ${btnDel}
+          </div>
+        </div>
+        <div class="venta-info">
+          <span>${v.cantidad} pza × $${(v.precioUnitario||0).toFixed(2)}</span>
+          <span>Total: <b>$${(v.total||0).toFixed(2)}</b></span>
+          <span class="ganancia">Ganancia: $${(v.gananciaTotal||0).toFixed(2)}</span>
+        </div>
+        ${v.cliente?`<div class="venta-cliente">👤 ${v.cliente}</div>`:''}
+        <div class="venta-footer">${fs} · ${v.vendedor}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── DASHBOARD ─────────────────────────────────────────────────────
+  function renderDashboard() {
+    const cont = document.getElementById('dashboard-content');
+    if (!cont) return;
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const vh  = ventas.filter(v => v.fecha?.toDate() >= hoy);
+    const tv  = vh.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
+    const td  = vh.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
+    const tg  = vh.reduce((a,v)=>a+(v.gananciaTotal||0),0);
+    const tc  = vh.reduce((a,v)=>a+(v.costoTotal||0),0);
+    const nv  = vh.filter(v=>v.tipo==='venta').length;
+    const nd  = vh.filter(v=>v.tipo==='debe').length;
+    const pp  = {};
+    vh.forEach(v => { if(!pp[v.productoNombre]) pp[v.productoNombre]={total:0,cantidad:0};
+      pp[v.productoNombre].total+=v.total||0; pp[v.productoNombre].cantidad+=v.cantidad||0; });
+    const top = Object.entries(pp).sort((a,b)=>b[1].total-a[1].total).slice(0,5);
+    cont.innerHTML = `
+      <div class="dash-grid">
+        <div class="dash-card accent">
+          <div class="dash-label">Ventas del día</div>
+          <div class="dash-value">$${tv.toFixed(2)}</div>
+          <div class="dash-sub">${nv} transacciones</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-label">Ganancia neta</div>
+          <div class="dash-value green">$${tg.toFixed(2)}</div>
+          <div class="dash-sub">Costo: $${tc.toFixed(2)}</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-label">Debes pendientes</div>
+          <div class="dash-value orange">$${td.toFixed(2)}</div>
+          <div class="dash-sub">${nd} registros</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-label">Productos en stock</div>
+          <div class="dash-value">${productos.length}</div>
+          <div class="dash-sub">${productos.filter(p=>p.stock<=5).length} con stock bajo</div>
+        </div>
+      </div>
+      ${top.length?`<div class="top-section"><div class="section-title">Top productos hoy</div>
+        ${top.map(([n,d])=>`<div class="top-row"><span>${n}</span><span>${d.cantidad} pzas · <b>$${d.total.toFixed(2)}</b></span></div>`).join('')}
+      </div>`:'<div class="empty-state">Sin ventas hoy todavía</div>'}
+      <button class="btn-excel" onclick="exportarExcel()">📊 Exportar Excel del día</button>`;
+  }
+
+  // ── EXCEL ─────────────────────────────────────────────────────────
+  window.exportarExcel = () => {
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const vh  = ventas.filter(v=>v.fecha?.toDate()>=hoy);
+    if (!vh.length) { showToast('No hay ventas hoy','error'); return; }
+    const wb  = XLSX.utils.book_new();
+    const data= [['Producto','Cantidad','Precio Unit.','Costo Unit.','Total','Ganancia','Tipo','Cliente','Vendedor','Hora']];
+    vh.forEach(v=>data.push([v.productoNombre,v.cantidad,v.precioUnitario,v.costoUnitario,
+      v.total,v.gananciaTotal,v.tipo,v.cliente||'',v.vendedor,v.fecha?.toDate().toLocaleTimeString('es-MX')]));
+    const tv=vh.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
+    const td=vh.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
+    const tg=vh.reduce((a,v)=>a+(v.gananciaTotal||0),0);
+    data.push([],[' RESUMEN'],['Efectivo','','','',tv.toFixed(2)],['Debes','','','',td.toFixed(2)],['Ganancia','','','',tg.toFixed(2)]);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(data),'Ventas');
+    const ws2=[['Producto','Código','Stock','Costo/pza','Precio Venta','Ganancia/pza']];
+    productos.forEach(p=>ws2.push([p.nombre,p.codigo||'',p.stock,(p.costoPieza||0).toFixed(2),(p.precioVenta||0).toFixed(2),(p.ganancia||0).toFixed(2)]));
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(ws2),'Stock');
+    XLSX.writeFile(wb,`ciberplanet-${new Date().toLocaleDateString('es-MX').replace(/\//g,'-')}.xlsx`);
+    showToast('Excel descargado ✓');
+  };
+
+  // ── CÁMARA ────────────────────────────────────────────────────────
+  window.toggleCamera = () => scannerAgregar.toggle({
+    videoId: 'video-preview', containerId: 'camera-container', btnId: 'btn-camara',
+    onCode: (code) => {
+      document.getElementById('p-codigo').value = code;
+      document.getElementById('scan-result-text').textContent = '✓ Código: ' + code;
+      showToast('Escaneado: ' + code);
+      verificarExistencia();
+    }
+  });
+
+  // Callback compartido para foto-análisis en sección Agregar
+  window.codigoAgregarDetectado = (code) => {
+    document.getElementById('p-codigo').value = code;
+    document.getElementById('scan-result-text').textContent = '✓ Código: ' + code;
+    showToast('Escaneado: ' + code);
+    verificarExistencia();
+  };
+
+  // ── CÁMARA VENTAS ─────────────────────────────────────────────────
+  function buscarProductoPorCodigo(code) {
+    const p = productos.find(x => (x.codigo||'').trim() === code.trim());
+    const resultEl = document.getElementById('scan-result-venta');
+    if (p) {
+      document.getElementById('venta-producto').value = p.id;
+      onProductoChange();
+      if (resultEl) resultEl.textContent = '✓ ' + p.nombre;
+      showToast('Producto: ' + p.nombre);
+    } else {
+      if (resultEl) resultEl.textContent = '✗ Código no encontrado: ' + code;
+      showToast('Producto no encontrado: ' + code, 'error');
+    }
+  }
+
+  window.toggleVentaCamera = () => scannerVentas.toggle({
+    videoId: 'video-preview-venta', containerId: 'camera-container-venta', btnId: 'btn-camara-venta',
+    onCode: (code) => buscarProductoPorCodigo(code)
+  });
+
+  // Callback compartido para foto-análisis en sección Ventas
+  window.codigoVentaDetectado = (code) => buscarProductoPorCodigo(code);
+
+  window.activarLectorVenta = () => {
+    document.getElementById('scanner-hidden-venta').focus();
+    showToast('Listo — escanea con el lector físico');
+  };
+
+  window.onVentaScannerKey = (e) => {
+    clearTimeout(ventaBarcodeTimeout);
+    if (e.key !== 'Enter') ventaBarcodeBuffer += e.key;
+    if (e.key === 'Enter' && ventaBarcodeBuffer.length > 2) {
+      buscarProductoPorCodigo(ventaBarcodeBuffer);
+      ventaBarcodeBuffer = '';
+    }
+    ventaBarcodeTimeout = setTimeout(()=>{ ventaBarcodeBuffer=''; }, 150);
+  };
+
+  // Lector físico
+  window.onScannerKey = (e) => {
+    clearTimeout(barcodeTimeout);
+    if (e.key !== 'Enter') barcodeBuffer += e.key;
+    if (e.key === 'Enter' && barcodeBuffer.length > 2) {
+      document.getElementById('p-codigo').value = barcodeBuffer;
+      document.getElementById('scan-result-text').textContent = '✓ ' + barcodeBuffer;
+      showToast('Código: ' + barcodeBuffer);
+      barcodeBuffer = '';
+      verificarExistencia();
+    }
+    barcodeTimeout = setTimeout(()=>{ barcodeBuffer=''; }, 150);
+  };
+
+  window.activarLector = () => {
+    document.getElementById('scanner-hidden').focus();
+    showToast('Listo — escanea con el lector físico');
+  };
+
+  // ── MODO COMPRA (lote / pieza) ────────────────────────────────────
+  window.setModoCompra = (modo) => {
+    modoCompra = modo;
+    document.getElementById('modo-lote').classList.toggle('modo-active', modo === 'lote');
+    document.getElementById('modo-pieza').classList.toggle('modo-active', modo === 'pieza');
+    document.getElementById('modo-hint-lote').style.display  = modo === 'lote'  ? 'block' : 'none';
+    document.getElementById('modo-hint-pieza').style.display = modo === 'pieza' ? 'block' : 'none';
+    document.getElementById('fila-lote').style.display  = modo === 'lote'  ? '' : 'none';
+    document.getElementById('fila-pieza').style.display = modo === 'pieza' ? '' : 'none';
+    document.getElementById('lbl-costo').textContent =
+      modo === 'lote' ? 'Costo total del lote ($) *' : 'Costo por pieza ($) *';
+    window.calcCostoPieza();
+  };
+
+  // Conectar botones de modo directamente desde el módulo (más confiable que onclick en type="module")
+  document.getElementById('modo-lote').addEventListener('click', () => window.setModoCompra('lote'));
+  document.getElementById('modo-pieza').addEventListener('click', () => window.setModoCompra('pieza'));
+
+  // ── PREVIEW ───────────────────────────────────────────────────────
+  window.calcCostoPieza = () => {
+    const precio = parseFloat(document.getElementById('p-precio-venta').value) || 0;
+    if (modoCompra === 'lote') {
+      const total  = parseFloat(document.getElementById('p-costo-total').value) || 0;
+      const piezas = parseInt(document.getElementById('p-piezas').value) || 1;
+      const cpp = total && piezas ? total / piezas : 0;
+      document.getElementById('costo-pieza-preview').textContent =
+        total && piezas ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${(precio - cpp).toFixed(2)}` : '';
+    } else {
+      const cpp = parseFloat(document.getElementById('p-costo-total').value) || 0;
+      document.getElementById('costo-pieza-preview').textContent =
+        cpp ? `Costo/pza: $${cpp.toFixed(2)}  |  Ganancia: $${(precio - cpp).toFixed(2)}` : '';
+    }
+  };
+
+  // ── ELIMINAR VENTA (solo dueño) ───────────────────────────────────
+
+  window.solicitarEliminarVenta = (id, nombre) => {
+    if (!currentUser || currentUser.email !== OWNER_EMAIL) return;
+    // Guardamos el id a eliminar en el modal
+    document.getElementById('pin-venta-id').value   = id;
+    document.getElementById('pin-venta-nombre').textContent = nombre;
+    document.getElementById('pin-input').value      = '';
+    document.getElementById('pin-error').textContent = '';
+    document.getElementById('pin-modal').style.display = 'flex';
+    setTimeout(() => document.getElementById('pin-input').focus(), 100);
+  };
+
+  window.cerrarPinModal = () => {
+    document.getElementById('pin-modal').style.display = 'none';
+  };
+
+  window.confirmarEliminarVenta = async () => {
+    const pin = document.getElementById('pin-input').value.trim();
+    if (pin !== DELETE_PIN) {
+      document.getElementById('pin-error').textContent = '❌ PIN incorrecto';
+      document.getElementById('pin-input').value = '';
+      document.getElementById('pin-input').focus();
+      return;
+    }
+    const id = document.getElementById('pin-venta-id').value;
+    try {
+      await deleteDoc(doc(db, 'ventas', id));
+      cerrarPinModal();
+      showToast('Venta eliminada ✓');
+    } catch(e) {
+      showToast('Error al eliminar', 'error');
+    }
+  };
+
+  // ── CONEXIÓN ──────────────────────────────────────────────────────
+  function setConnStatus(online) {
+    const dot = document.getElementById('conn-dot');
+    if (!dot) return;
+    dot.title   = online ? 'Sincronizado con Firebase' : 'Sin conexión / Error de permisos';
+    dot.style.background = online ? 'var(--green)' : 'var(--red)';
+  }
+
+  // ── TOAST ─────────────────────────────────────────────────────────
+  window.showToast = (msg, type='ok') => {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className   = 'toast show '+(type==='error'?'toast-error':'toast-ok');
+    setTimeout(()=>t.classList.remove('show'), 3000);
+  };
+
+  setTimeout(()=>{
+    document.getElementById('stock-search')?.addEventListener('input', renderStock);
+    document.getElementById('ventas-filtro')?.addEventListener('change', renderVentas);
+  }, 600);
+</script>
+
+<style>
+:root{--bg:#0f0f13;--surface:#1a1a22;--surface2:#22222e;--border:#2e2e3e;--accent:#f5c842;--green:#3ddc84;--orange:#ff9f43;--red:#ff4d6d;--blue:#4ecdc4;--text:#f0f0f5;--muted:#8888aa;--radius:14px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+
+/* LOGIN */
+#login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 30% 20%,#1a1200,#0f0f13 60%);padding:16px}
+.login-box{background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:40px 28px;width:100%;max-width:400px;box-shadow:0 40px 80px rgba(0,0,0,.6)}
+.login-logo{font-family:'Syne',sans-serif;font-size:1.8rem;font-weight:800;color:var(--accent);margin-bottom:4px;display:flex;align-items:center;gap:10px}
+.login-sub{color:var(--muted);font-size:.87rem;margin-bottom:30px}
+.login-box label{display:block;font-size:.72rem;color:var(--muted);margin-bottom:5px;letter-spacing:.06em;text-transform:uppercase}
+.login-box input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:1rem;margin-bottom:14px;outline:none;transition:border-color .2s;font-family:'DM Sans',sans-serif}
+.login-box input:focus{border-color:var(--accent)}
+.login-btn{width:100%;background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:1rem;padding:14px;border:none;border-radius:10px;cursor:pointer;transition:opacity .2s}
+.login-btn:hover{opacity:.9}
+.login-error{color:var(--red);font-size:.83rem;margin-top:10px;text-align:center}
+
+/* APP */
+#app-screen{display:none;flex-direction:column;min-height:100vh}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.topbar-logo{font-family:'Syne',sans-serif;font-weight:800;color:var(--accent);font-size:1.1rem;display:flex;align-items:center;gap:8px}
+.topbar-right{display:flex;align-items:center;gap:10px}
+#user-email{font-size:.72rem;color:var(--muted);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.logout-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:.76rem;transition:all .2s}
+.logout-btn:hover{border-color:var(--red);color:var(--red)}
+
+/* NAV */
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);display:flex;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
+.nav-btn{flex:1;background:none;border:none;color:var(--muted);padding:10px 4px;font-size:.66rem;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;transition:color .2s;font-family:'DM Sans',sans-serif}
+.nav-btn .icon{font-size:1.3rem}
+.nav-btn.active{color:var(--accent)}
+
+/* CONTENT */
+.content{padding:16px 14px 88px;max-width:680px;margin:0 auto;width:100%}
+.tab-content{display:none}
+.tab-content.active{display:block;animation:fadeIn .2s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.page-title{font-family:'Syne',sans-serif;font-size:1.35rem;font-weight:700;margin-bottom:16px}
+
+/* CARD FORM */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:14px}
+.card-title{font-family:'Syne',sans-serif;font-weight:700;margin-bottom:14px;font-size:.93rem;color:var(--accent)}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-full{grid-column:1/-1}
+.form-group{display:flex;flex-direction:column;gap:5px}
+.form-group label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.form-group input,.form-group select{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;color:var(--text);font-size:.94rem;outline:none;transition:border-color .2s;font-family:'DM Sans',sans-serif;width:100%}
+.form-group input:focus,.form-group select:focus{border-color:var(--accent)}
+.form-group select option{background:var(--surface2)}
+.preview-text{font-size:.82rem;color:var(--green);min-height:18px;font-weight:500}
+.btn-primary{width:100%;background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:.93rem;padding:13px;border:none;border-radius:10px;cursor:pointer;margin-top:10px;transition:opacity .2s}
+.btn-primary:hover{opacity:.9}
+
+/* SCANNER */
+.scanner-section{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.scan-btn-row{display:flex;gap:8px}
+.btn-scan{flex:1;background:var(--surface2);border:1px dashed var(--accent);color:var(--accent);padding:10px 8px;border-radius:10px;cursor:pointer;font-size:.82rem;transition:background .2s;text-align:center;font-family:'DM Sans',sans-serif}
+.btn-scan:hover{background:rgba(245,200,66,.1)}
+#camera-container,#camera-container-venta{
+  display:none;background:#000;border-radius:14px;overflow:hidden;
+  position:relative;width:100%;aspect-ratio:4/3;max-height:320px;
+  box-shadow:0 0 0 2px rgba(245,200,66,.3);
+}
+#video-preview,#video-preview-venta{width:100%;height:100%;object-fit:cover;display:block}
+.camera-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+/* Marco más grande para capturar mejor distintos tamaños de código */
+.camera-frame{
+  position:relative;
+  width:78%;max-width:300px;height:130px;
+  border-radius:12px;
+  box-shadow:0 0 0 9999px rgba(0,0,0,.45);
+}
+.camera-frame::before,.camera-frame::after{content:'';position:absolute;width:26px;height:26px;border-color:var(--accent);border-style:solid}
+.camera-frame::before{top:-1px;left:-1px;border-width:3px 0 0 3px;border-radius:10px 0 0 0}
+.camera-frame::after{bottom:-1px;right:-1px;border-width:0 3px 3px 0;border-radius:0 0 10px 0}
+.camera-frame .corner-tr{position:absolute;top:-1px;right:-1px;width:26px;height:26px;border:3px solid var(--accent);border-left:none;border-bottom:none;border-radius:0 10px 0 0}
+.camera-frame .corner-bl{position:absolute;bottom:-1px;left:-1px;width:26px;height:26px;border:3px solid var(--accent);border-right:none;border-top:none;border-radius:0 0 0 10px}
+/* Línea de escaneo más rápida y brillante */
+.scan-line{
+  position:absolute;left:4px;right:4px;height:2px;
+  background:linear-gradient(90deg,transparent 0%,var(--accent) 30%,#fff 50%,var(--accent) 70%,transparent 100%);
+  animation:scanMove 1.2s ease-in-out infinite;
+  box-shadow:0 0 10px 2px rgba(245,200,66,.6);
+}
+@keyframes scanMove{0%{top:6%}50%{top:90%}100%{top:6%}}
+.scan-result{font-size:.86rem;color:var(--green);font-weight:500;min-height:20px;margin-top:6px}
+.scanner-hidden-input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+/* Controles de cámara (flash) */
+.cam-controls{
+  position:absolute;bottom:0;left:0;right:0;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 12px;
+  background:linear-gradient(to top,rgba(0,0,0,.75) 0%,transparent 100%);
+}
+.btn-flash{
+  display:none;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.35);
+  color:#fff;padding:6px 14px;border-radius:20px;cursor:pointer;
+  font-size:.8rem;backdrop-filter:blur(4px);transition:all .2s;
+  font-family:'DM Sans',sans-serif;
+}
+.btn-flash.flash-on{background:var(--accent);border-color:var(--accent);color:#000;font-weight:700}
+.cam-tip{font-size:.68rem;color:rgba(255,255,255,.55);pointer-events:none}
+
+/* Modo compra toggle */
+.modo-toggle{display:flex;gap:8px;margin-bottom:6px}
+.modo-btn{flex:1;padding:12px 8px;border-radius:10px;cursor:pointer;
+  font-family:'DM Sans',sans-serif;font-size:.88rem;font-weight:600;
+  border:1px solid var(--border);background:var(--surface2);color:var(--muted);
+  transition:all .2s;-webkit-tap-highlight-color:transparent}
+.modo-btn.modo-active{background:rgba(245,200,66,.15);border-color:var(--accent);color:var(--accent)}
+.modo-hint{font-size:.76rem;color:var(--muted);padding:7px 11px;
+  background:var(--surface2);border-radius:8px;border-left:3px solid var(--accent);
+  line-height:1.45;margin-top:2px}
+
+
+.search-bar{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:.92rem;outline:none;width:100%;margin-bottom:14px;font-family:'DM Sans',sans-serif}
+.search-bar:focus{border-color:var(--accent)}
+.stock-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px}
+.stock-card.low-stock{border-color:rgba(255,77,109,.4)}
+.stock-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+.stock-name{font-family:'Syne',sans-serif;font-weight:700;font-size:.96rem}
+.stock-code{font-size:.73rem;color:var(--muted);margin-top:2px}
+.stock-badge{padding:4px 12px;border-radius:20px;font-size:.76rem;font-weight:700}
+.badge-green{background:rgba(61,220,132,.15);color:var(--green)}
+.badge-red{background:rgba(255,77,109,.15);color:var(--red)}
+.badge-blue{background:rgba(78,205,196,.15);color:var(--blue)}
+.badge-orange{background:rgba(255,159,67,.15);color:var(--orange)}
+.stock-info{display:flex;gap:12px;font-size:.8rem;color:var(--muted);margin-bottom:10px;flex-wrap:wrap}
+.stock-info .ganancia{color:var(--green)}
+.stock-actions{display:flex;gap:8px}
+.btn-icon{background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 14px;cursor:pointer;font-size:1rem;transition:all .2s}
+.btn-icon:hover{border-color:var(--accent);color:var(--accent)}
+.btn-icon.btn-danger:hover{border-color:var(--red);color:var(--red)}
+
+/* VENTAS */
+.filtro-select{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;margin-bottom:14px;width:100%;font-family:'DM Sans',sans-serif}
+.periodo-resumen{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}
+.periodo-item{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 10px;display:flex;flex-direction:column;align-items:center;gap:3px;text-align:center}
+.periodo-label{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.periodo-val{font-family:'Syne',sans-serif;font-weight:800;font-size:1rem}
+.periodo-val.green{color:var(--green)}
+.periodo-val.orange{color:var(--orange)}
+.periodo-sub{font-size:.68rem;color:var(--muted)}
+.venta-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:9px}
+.venta-card.venta-debe{border-left:3px solid var(--orange)}
+.venta-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
+.venta-nombre{font-family:'Syne',sans-serif;font-weight:700}
+.venta-badge{padding:3px 10px;border-radius:20px;font-size:.74rem;font-weight:700}
+.venta-info{display:flex;gap:12px;font-size:.8rem;color:var(--muted);flex-wrap:wrap;margin-bottom:5px}
+.venta-info .ganancia{color:var(--green)}
+.venta-cliente{font-size:.78rem;color:var(--blue);margin-bottom:4px}
+.venta-footer{font-size:.7rem;color:var(--muted)}
+
+/* DASHBOARD */
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.dash-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+.dash-card.accent{border-color:rgba(245,200,66,.4);background:rgba(245,200,66,.05)}
+.dash-label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px}
+.dash-value{font-family:'Syne',sans-serif;font-size:1.4rem;font-weight:800;margin-bottom:3px}
+.dash-value.green{color:var(--green)}
+.dash-value.orange{color:var(--orange)}
+.dash-sub{font-size:.72rem;color:var(--muted)}
+.top-section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px}
+.section-title{font-family:'Syne',sans-serif;font-weight:700;margin-bottom:12px;font-size:.9rem}
+.top-row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:.83rem}
+.top-row:last-child{border-bottom:none}
+.btn-excel{width:100%;background:rgba(61,220,132,.1);border:1px solid var(--green);color:var(--green);font-family:'Syne',sans-serif;font-weight:700;padding:13px;border-radius:10px;cursor:pointer;font-size:.91rem;transition:background .2s}
+.btn-excel:hover{background:rgba(61,220,132,.2)}
+
+/* MISC */
+.empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:.87rem}
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);padding:11px 22px;border-radius:10px;font-size:.87rem;font-weight:500;opacity:0;transition:all .3s;z-index:999;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast-ok{background:var(--green);color:#000}
+.toast-error{background:var(--red);color:#fff}
+.diag-line{padding:3px 6px;border-radius:5px;line-height:1.5}
+.diag-info{color:var(--muted)}
+.diag-ok{color:var(--green);background:rgba(61,220,132,.08)}
+.diag-warn{color:var(--orange);background:rgba(255,159,67,.08)}
+.diag-error{color:var(--red);background:rgba(255,77,109,.08)}
+
+/* PRODUCTO EXISTENTE */
+.existente-card{border-color:rgba(61,220,132,.35)!important;background:rgba(61,220,132,.04)!important}
+.existente-header{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+.existente-icon{font-size:2rem;line-height:1}
+.existente-titulo{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.existente-nombre{font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem;color:var(--text)}
+.existente-info{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:4px}
+.existente-dato{background:var(--surface2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:3px}
+.existente-dato span{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.existente-dato b{font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem}
+.existente-dato b.green{color:var(--green)}
+.btn-cancelar-existente{flex:1;background:transparent;border:1px solid var(--border);color:var(--muted);padding:13px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:.9rem;transition:all .2s}
+.btn-cancelar-existente:hover{border-color:var(--red);color:var(--red)}
+
+/* PIN MODAL */
+.pin-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:999;padding:16px}
+.pin-modal{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:28px 24px;width:100%;max-width:340px;box-shadow:0 30px 60px rgba(0,0,0,.6)}
+.pin-modal-title{font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem;margin-bottom:4px;color:var(--accent)}
+.pin-modal-sub{font-size:.82rem;color:var(--muted);margin-bottom:20px}
+.pin-modal-sub b{color:var(--text)}
+.pin-input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:13px 14px;color:var(--text);font-size:1.2rem;outline:none;letter-spacing:.3em;text-align:center;font-family:'DM Sans',sans-serif;transition:border-color .2s;margin-bottom:8px}
+.pin-input:focus{border-color:var(--accent)}
+.pin-error{color:var(--red);font-size:.82rem;min-height:18px;text-align:center;margin-bottom:12px}
+.pin-btn-row{display:flex;gap:10px}
+.pin-btn-cancel{flex:1;background:transparent;border:1px solid var(--border);color:var(--muted);padding:12px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:.9rem;transition:all .2s}
+.pin-btn-cancel:hover{border-color:var(--red);color:var(--red)}
+.pin-btn-confirm{flex:1;background:var(--red);color:#fff;border:none;padding:12px;border-radius:10px;cursor:pointer;font-family:'Syne',sans-serif;font-weight:700;font-size:.9rem;transition:opacity .2s}
+.pin-btn-confirm:hover{opacity:.85}
+/* Botón eliminar venta */
+.btn-del-venta{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:1rem;padding:2px 4px;border-radius:6px;transition:color .2s;line-height:1}
+.btn-del-venta:hover{color:var(--red)}
+
+/* FOTO ANÁLISIS */
+.btn-foto{display:flex;align-items:center;gap:6px;background:rgba(245,200,66,.12);border:1.5px dashed var(--accent);color:var(--accent);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;transition:all .2s;white-space:nowrap}
+.btn-foto:hover{background:rgba(245,200,66,.22)}
+.btn-foto:disabled{opacity:.4;cursor:not-allowed}
+.foto-wrap{display:none;align-items:center;gap:12px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-top:8px}
+.foto-wrap.visible{display:flex}
+.foto-preview{border-radius:8px;border:1.5px solid var(--border);flex-shrink:0;object-fit:contain;max-width:96px;max-height:72px}
+.foto-status{font-size:.82rem;color:var(--text);line-height:1.45;flex:1}
+.foto-status .ok{color:#00FF88;font-weight:700}
+.foto-status .fail{color:var(--red)}
+.foto-status .spin::before{content:'⏳ '}
+
+@media(max-width:420px){.form-grid{grid-template-columns:1fr}.dash-grid{grid-template-columns:1fr}.scan-btn-row{flex-direction:column}}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">🌐 CiberPlanet</div>
+    <div class="login-sub">Sistema de stock y ventas</div>
+    <label>Correo electrónico</label>
+    <input type="email" id="login-email" placeholder="tu@correo.com" autocomplete="email"/>
+    <label>Contraseña</label>
+    <input type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password"
+      onkeydown="if(event.key==='Enter') doLogin()"/>
+    <button class="login-btn" id="login-btn" onclick="doLogin()">Entrar</button>
+    <div id="login-error" class="login-error"></div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app-screen">
+  <div class="topbar">
+    <div class="topbar-logo">🌐 CiberPlanet</div>
+    <div class="topbar-right">
+      <span id="conn-dot" title="Verificando conexión..." style="width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block;flex-shrink:0;transition:background .4s"></span>
+      <span id="user-email"></span>
+      <button class="logout-btn" onclick="doLogout()">Salir</button>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- DASHBOARD -->
+    <div class="tab-content active" id="tab-dashboard">
+      <div class="page-title">📊 Resumen del día</div>
+      <div id="dashboard-content"><div class="empty-state">Cargando...</div></div>
+    </div>
+
+    <!-- AGREGAR -->
+    <div class="tab-content" id="tab-agregar">
+      <div class="page-title">📦 Agregar producto</div>
+
+      <!-- Escáner siempre visible arriba -->
+      <div class="card">
+        <div class="card-title">📷 Buscar por código de barras</div>
+        <div class="scanner-section">
+          <div class="scan-btn-row">
+            <button class="btn-scan" id="btn-camara" onclick="toggleCamera()">📷 Escanear con cámara</button>
+            <button class="btn-scan" onclick="activarLector()">🔫 Lector físico</button>
+          </div>
+          <div id="camera-container">
+            <video id="video-preview" autoplay playsinline muted></video>
+            <canvas id="overlay-camera-container" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;border-radius:12px;"></canvas>
+            <div class="camera-overlay">
+              <div class="camera-frame">
+                <div class="corner-tr"></div>
+                <div class="corner-bl"></div>
+                <div class="scan-line"></div>
+              </div>
+            </div>
+            <div class="cam-controls">
+              <button class="btn-flash" id="btn-flash-camera-container"
+                onclick="_scannerAgregar.toggleFlash()">🔦 Flash</button>
+              <button class="btn-foto" id="btn-foto-agregar"
+                onclick="_scannerAgregar.capturarYAnalizar('video-preview','foto-prev-agregar','foto-stat-agregar', codigoAgregarDetectado)">📸 Capturar</button>
+              <span class="cam-tip">Acerca el código al recuadro</span>
+            </div>
+          </div>
+          <!-- Preview foto análisis -->
+          <div class="foto-wrap" id="foto-wrap-agregar">
+            <canvas class="foto-preview" id="foto-prev-agregar"></canvas>
+            <div class="foto-status" id="foto-stat-agregar"></div>
+          </div>
+          <div class="scan-result" id="scan-result-text"></div>
+        </div>
+        <input class="scanner-hidden-input" id="scanner-hidden"
+          onkeydown="onScannerKey(event)" autocomplete="off" tabindex="-1"/>
+        <input type="text" id="p-codigo" placeholder="O escribe el código manualmente..."
+          style="margin-top:10px;width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;color:var(--text);font-size:.94rem;outline:none;font-family:'DM Sans',sans-serif;"
+          oninput="verificarExistencia()"/>
+      </div>
+
+      <!-- MODO: Producto YA existe -->
+      <div id="form-producto-existente" class="card existente-card" style="display:none">
+        <div class="existente-header">
+          <span class="existente-icon">✅</span>
+          <div>
+            <div class="existente-titulo">Producto encontrado</div>
+            <div class="existente-nombre" id="encontrado-nombre"></div>
+          </div>
+        </div>
+        <div class="existente-info">
+          <div class="existente-dato"><span>Código</span><b id="encontrado-codigo"></b></div>
+          <div class="existente-dato"><span>Stock actual</span><b id="encontrado-stock" class="green"></b> pzas</div>
+          <div class="existente-dato"><span>Precio venta</span><b id="encontrado-precio"></b></div>
+        </div>
+        <div class="form-group" style="margin-top:14px">
+          <label>¿Cuántas piezas nuevas vas a agregar?</label>
+          <input type="number" id="p-piezas-extra" placeholder="Ej: 25" min="1" inputmode="numeric"
+            style="background:var(--surface2);border:1px solid var(--accent);border-radius:10px;padding:13px 14px;color:var(--text);font-size:1.1rem;outline:none;width:100%;text-align:center;font-family:'DM Sans',sans-serif;font-weight:700;"
+            onkeydown="if(event.key==='Enter') confirmarAgregarStock()"/>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:10px">
+          <button class="btn-cancelar-existente" onclick="cancelarExistente()">Cancelar</button>
+          <button class="btn-primary" style="margin-top:0;flex:2" onclick="confirmarAgregarStock()">+ Sumar al stock</button>
+        </div>
+      </div>
+
+      <!-- MODO: Producto NUEVO -->
+      <div id="form-nuevo-producto" class="card">
+        <div class="card-title">Nuevo producto</div>
+        <div class="form-grid">
+
+          <!-- Nombre -->
+          <div class="form-group form-full">
+            <label>Nombre del producto *</label>
+            <input type="text" id="p-nombre" placeholder="Ej: Pulparindo" oninput="verificarExistencia()"/>
+          </div>
+
+          <!-- Toggle lote / pieza -->
+          <div class="form-group form-full">
+            <label>¿Cómo compraste este producto?</label>
+            <div class="modo-toggle">
+              <button id="modo-lote" class="modo-btn modo-active">
+                📦 Por lote
+              </button>
+              <button id="modo-pieza" class="modo-btn">
+                🏷 Por pieza
+              </button>
+            </div>
+            <div class="modo-hint" id="modo-hint-lote">
+              Pagaste un precio por todo el paquete. Ej: $50 por 25 dulces → te calcula el costo por pieza.
+            </div>
+            <div class="modo-hint" id="modo-hint-pieza" style="display:none">
+              Sabes cuánto te costó cada pieza. Ej: cada dulce te costó $2.00.
+            </div>
+          </div>
+
+          <!-- Campo de costo (label cambia según modo) -->
+          <div class="form-group">
+            <label id="lbl-costo">Costo total del lote ($) *</label>
+            <input type="number" id="p-costo-total" placeholder="50.00"
+              step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
+          </div>
+
+          <!-- Piezas del lote (solo visible en modo lote) -->
+          <div class="form-group" id="fila-lote">
+            <label>Piezas en el lote *</label>
+            <input type="number" id="p-piezas" placeholder="25"
+              min="1" inputmode="numeric" oninput="calcCostoPieza()"/>
+          </div>
+          <!-- Espacio vacío en modo pieza para mantener grid -->
+          <div id="fila-pieza" style="display:none"></div>
+
+          <!-- Precio de venta -->
+          <div class="form-group">
+            <label>Precio de venta/pza ($) *</label>
+            <input type="number" id="p-precio-venta" placeholder="3.00"
+              step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
+          </div>
+
+          <!-- Stock inicial -->
+          <div class="form-group">
+            <label>Stock inicial (pzas) *</label>
+            <input type="number" id="p-stock" placeholder="25"
+              min="0" inputmode="numeric" oninput="calcCostoPieza()"/>
+          </div>
+
+          <!-- Preview ganancia -->
+          <div class="form-group form-full">
+            <div class="preview-text" id="costo-pieza-preview"></div>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="agregarProducto()">+ Guardar producto nuevo</button>
+      </div>
+    </div>
+
+    <!-- STOCK -->
+    <div class="tab-content" id="tab-stock">
+      <div class="page-title">🏪 Stock actual</div>
+      <input class="search-bar" id="stock-search" placeholder="🔍 Buscar producto o código..."/>
+      <div id="stock-list"><div class="empty-state">Cargando...</div></div>
+    </div>
+
+    <!-- VENTAS -->
+    <div class="tab-content" id="tab-ventas">
+      <div class="page-title">💰 Registrar venta</div>
+      <div class="card">
+        <div class="card-title">Nueva transacción</div>
+        <div class="form-grid">
+          <div class="form-group form-full">
+            <label>Buscar por código de barras</label>
+            <div class="scanner-section">
+              <div class="scan-btn-row">
+                <button class="btn-scan" id="btn-camara-venta" onclick="toggleVentaCamera()">📷 Escanear con cámara</button>
+                <button class="btn-scan" onclick="activarLectorVenta()">🔫 Lector físico</button>
+              </div>
+              <div id="camera-container-venta">
+                <video id="video-preview-venta" autoplay playsinline muted></video>
+                <canvas id="overlay-camera-container-venta" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;border-radius:12px;"></canvas>
+                <div class="camera-overlay">
+                  <div class="camera-frame">
+                    <div class="corner-tr"></div>
+                    <div class="corner-bl"></div>
+                    <div class="scan-line"></div>
+                  </div>
+                </div>
+                <div class="cam-controls">
+                  <button class="btn-flash" id="btn-flash-camera-container-venta"
+                    onclick="_scannerVentas.toggleFlash()">🔦 Flash</button>
+                  <button class="btn-foto" id="btn-foto-venta"
+                    onclick="_scannerVentas.capturarYAnalizar('video-preview-venta','foto-prev-venta','foto-stat-venta', codigoVentaDetectado)">📸 Capturar</button>
+                  <span class="cam-tip">Acerca el código al recuadro</span>
+                </div>
+              </div>
+              <!-- Preview foto análisis -->
+              <div class="foto-wrap" id="foto-wrap-venta">
+                <canvas class="foto-preview" id="foto-prev-venta"></canvas>
+                <div class="foto-status" id="foto-stat-venta"></div>
+              </div>
+              <div class="scan-result" id="scan-result-venta"></div>
+            </div>
+            <input class="scanner-hidden-input" id="scanner-hidden-venta"
+              onkeydown="onVentaScannerKey(event)" autocomplete="off" tabindex="-1"/>
+          </div>
+          <div class="form-group form-full">
+            <label>Producto</label>
+            <select id="venta-producto" onchange="onProductoChange()">
+              <option value="">— Selecciona producto —</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Cantidad</label>
+            <input type="number" id="venta-cantidad" value="1" min="1" inputmode="numeric"/>
+          </div>
+          <div class="form-group">
+            <label>Precio unitario ($)</label>
+            <input type="number" id="venta-precio" placeholder="Auto" step="0.01" readonly style="opacity:.6"/>
+          </div>
+          <div class="form-group form-full">
+            <label>Tipo</label>
+            <select id="venta-tipo">
+              <option value="venta">✅ Venta — pago en efectivo</option>
+              <option value="debe">💳 Debe — pago pendiente</option>
+            </select>
+          </div>
+          <div class="form-group form-full">
+            <label>Nombre del cliente (recomendado para debes)</label>
+            <input type="text" id="venta-cliente" placeholder="Ej: Juan García"/>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="registrarVenta()">Registrar</button>
+      </div>
+      <div class="page-title" style="margin-top:18px">Historial</div>
+      <select class="filtro-select" id="ventas-filtro">
+        <option value="hoy">📅 Hoy</option>
+        <option value="semana">📆 Últimos 7 días</option>
+        <option value="mes">🗓 Últimos 30 días</option>
+        <option value="todo">📋 Todo el historial</option>
+      </select>
+      <input class="search-bar" id="ventas-search" placeholder="🔍 Buscar por producto o cliente..." style="margin-top:8px"/>
+      <div id="ventas-list"><div class="empty-state">Cargando...</div></div>
+    </div>
+
+  </div><!-- /content -->
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-tab="dashboard" onclick="showTab('dashboard')">
+      <span class="icon">📊</span>Resumen
+    </button>
+    <button class="nav-btn" data-tab="agregar" onclick="showTab('agregar')">
+      <span class="icon">➕</span>Producto
+    </button>
+    <button class="nav-btn" data-tab="stock" onclick="showTab('stock')">
+      <span class="icon">🏪</span>Stock
+    </button>
+    <button class="nav-btn" data-tab="ventas" onclick="showTab('ventas')">
+      <span class="icon">💰</span>Ventas
+    </button>
+  </nav>
+</div>
+
+<!-- PIN MODAL — solo visible para el dueño -->
+<div id="pin-modal" class="pin-modal-overlay" onclick="if(event.target===this)cerrarPinModal()">
+  <div class="pin-modal">
+    <div class="pin-modal-title">🔐 Confirmar eliminación</div>
+    <div class="pin-modal-sub">Eliminar venta de: <b id="pin-venta-nombre"></b></div>
+    <input type="hidden" id="pin-venta-id"/>
+    <input class="pin-input" id="pin-input" type="password" inputmode="numeric"
+      maxlength="8" placeholder="••••••••"
+      onkeydown="if(event.key==='Enter') confirmarEliminarVenta()"/>
+    <div class="pin-error" id="pin-error"></div>
+    <div class="pin-btn-row">
+      <button class="pin-btn-cancel" onclick="cerrarPinModal()">Cancelar</button>
+      <button class="pin-btn-confirm" onclick="confirmarEliminarVenta()">Eliminar</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+</body>
+</html>
