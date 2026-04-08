@@ -476,8 +476,6 @@
         const prevEl = document.getElementById(previewId);
         const statEl = document.getElementById(statusId);
         const wrap   = prevEl ? prevEl.closest('.foto-wrap') : null;
-
-        // Localizar el botón 📸 por id derivado del statusId
         const fotoBtnId = statusId === 'foto-stat-agregar' ? 'btn-foto-agregar' : 'btn-foto-venta';
         const fotoBtn   = document.getElementById(fotoBtnId);
 
@@ -493,7 +491,6 @@
         if (wrap) wrap.classList.add('visible');
 
         // ── 1. Capturar frame de máxima calidad ──────────────────────
-        // ImageCapture.grabFrame() da la imagen sin motion-blur del video
         let img = null;
         const track = this.stream?.getVideoTracks()[0];
         if (track && typeof ImageCapture !== 'undefined') {
@@ -514,9 +511,9 @@
 
         const W = img.width, H = img.height;
 
-        // ── 2. Miniatura de lo capturado ──────────────────────────────
+        // ── 2. Miniatura ──────────────────────────────────────────────
         if (prevEl) {
-          const th = Math.min(72, Math.round(H * 96 / W));
+          const th = Math.min(80, Math.round(H * 110 / W));
           const tw = Math.round(W * th / H);
           prevEl.width = tw; prevEl.height = th;
           prevEl.getContext('2d').drawImage(img, 0, 0, tw, th);
@@ -525,21 +522,22 @@
 
         // ── 3. Helpers ────────────────────────────────────────────────
 
-        // makeOC: crea OffscreenCanvas con recorte + filtros + escala + rotación
+        // makeOC: recorte + escala + filtros + padding blanco + rotación
         const makeOC = ({ cx=0, cy=0, cw=W, ch=H, scale=1,
                           contrast=1, brightness=1, invert=false,
-                          gray=false, rotate=0, pad=0 } = {}) => {
+                          gray=false, sharpen=false, rotate=0, pad=0,
+                          threshold=false } = {}) => {
           const dw = Math.round(cw * scale), dh = Math.round(ch * scale);
           const rotated = rotate === 90 || rotate === 270;
-          // Canvas base (antes del padding)
           const base = new OffscreenCanvas(rotated ? dh : dw, rotated ? dw : dh);
           const bctx = base.getContext('2d', { willReadFrequently: true });
-          const filters = [];
-          if (gray)          filters.push('grayscale(1)');
-          if (contrast  !==1) filters.push(`contrast(${contrast})`);
-          if (brightness!==1) filters.push(`brightness(${brightness})`);
-          if (invert)        filters.push('invert(1)');
-          if (filters.length) bctx.filter = filters.join(' ');
+          const f = [];
+          if (gray)            f.push('grayscale(1)');
+          if (sharpen)         f.push('contrast(1.4) saturate(0)');
+          if (contrast  !== 1) f.push(`contrast(${contrast})`);
+          if (brightness!== 1) f.push(`brightness(${brightness})`);
+          if (invert)          f.push('invert(1)');
+          if (f.length) bctx.filter = f.join(' ');
           if (rotate !== 0) {
             bctx.translate(base.width/2, base.height/2);
             bctx.rotate(rotate * Math.PI / 180);
@@ -547,8 +545,18 @@
           } else {
             bctx.drawImage(img, cx, cy, cw, ch, 0, 0, dw, dh);
           }
+          // Binarización manual (para fondos de colores intensos)
+          if (threshold) {
+            const id = bctx.getImageData(0, 0, base.width, base.height);
+            const d  = id.data;
+            for (let i = 0; i < d.length; i += 4) {
+              const lum = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+              const v   = lum < 128 ? 0 : 255;
+              d[i] = d[i+1] = d[i+2] = v;
+            }
+            bctx.putImageData(id, 0, 0);
+          }
           if (!pad) return base;
-          // Añadir padding blanco: CRÍTICO para códigos sin quiet zone
           const padded = new OffscreenCanvas(base.width + pad*2, base.height + pad*2);
           const pctx = padded.getContext('2d');
           pctx.fillStyle = '#FFFFFF';
@@ -557,119 +565,109 @@
           return padded;
         };
 
-        // ocToUrl: convierte OffscreenCanvas → blob URL (para ZXing)
         const ocToUrl = async (oc) => {
           const blob = await oc.convertToBlob({ type: 'image/png' });
           return URL.createObjectURL(blob);
         };
 
-        // imgToUrl: convierte ImageBitmap → blob URL
-        const imgBitmapToUrl = async (bmp, opts = {}) => {
-          const oc  = new OffscreenCanvas(bmp.width, bmp.height);
-          const ctx = oc.getContext('2d');
-          const f   = [];
-          if (opts.contrast   && opts.contrast  !==1) f.push(`contrast(${opts.contrast})`);
-          if (opts.brightness && opts.brightness!==1) f.push(`brightness(${opts.brightness})`);
-          if (opts.gray)  f.push('grayscale(1)');
-          if (opts.invert) f.push('invert(1)');
-          if (f.length) ctx.filter = f.join(' ');
-          ctx.drawImage(bmp, 0, 0);
-          return ocToUrl(oc);
-        };
-
-        // BarcodeDetector: sobre OffscreenCanvas o ImageBitmap
+        // BarcodeDetector
         let _det = null;
         const _initDet = async () => {
           if (_det) return _det;
-          if (!('BarcodeDetector' in window)) throw new Error('no BarcodeDetector');
+          if (!('BarcodeDetector' in window)) throw new Error('no BD');
           let fmts;
           try { fmts = await BarcodeDetector.getSupportedFormats(); }
           catch(e) { fmts = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39',
                               'code_93','itf','codabar','qr_code','data_matrix','pdf417','aztec']; }
-          _det = new BarcodeDetector({ formats: fmts });
-          return _det;
+          _det = new BarcodeDetector({ formats: fmts }); return _det;
         };
-        const tryDet = async (source) => {
+        const tryDet = async (src) => {
           const d = await _initDet();
-          const r = await d.detect(source);
+          const r = await d.detect(src);
           if (!r.length) throw new Error('nf');
           return r[0].rawValue;
         };
 
-        // ZXing: via blob URL (decodeFromImageUrl) — MÁS FIABLE que decodeFromCanvas
-        // ZXing 0.18: decodeFromImageUrl devuelve Promise<Result>
-        const zxHints = typeof ZXing !== 'undefined' ? new Map([
-          [ZXing.DecodeHintType.TRY_HARDER, true],
-          [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-            ZXing.BarcodeFormat.EAN_13,   ZXing.BarcodeFormat.EAN_8,
-            ZXing.BarcodeFormat.UPC_A,    ZXing.BarcodeFormat.UPC_E,
-            ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
-            ZXing.BarcodeFormat.CODE_93,  ZXing.BarcodeFormat.ITF,
-            ZXing.BarcodeFormat.CODABAR,  ZXing.BarcodeFormat.QR_CODE,
-            ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417,
-            ZXing.BarcodeFormat.AZTEC,    ZXing.BarcodeFormat.RSS_14,
-          ]]
-        ]) : null;
-
-        const tryZX = async (urlOrOpts) => {
+        // ZXing via blob URL
+        const ZX_FMTS = typeof ZXing !== 'undefined' ? [
+          ZXing.BarcodeFormat.EAN_13,   ZXing.BarcodeFormat.EAN_8,
+          ZXing.BarcodeFormat.UPC_A,    ZXing.BarcodeFormat.UPC_E,
+          ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+          ZXing.BarcodeFormat.CODE_93,  ZXing.BarcodeFormat.ITF,
+          ZXing.BarcodeFormat.CODABAR,  ZXing.BarcodeFormat.QR_CODE,
+          ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417,
+          ZXing.BarcodeFormat.AZTEC,    ZXing.BarcodeFormat.RSS_14,
+          ZXing.BarcodeFormat.RSS_EXPANDED,
+        ] : [];
+        const tryZX = async (oc) => {
           if (typeof ZXing === 'undefined') throw new Error('no ZXing');
-          let url;
-          const needRevoke = typeof urlOrOpts !== 'string';
-          if (needRevoke) url = await ocToUrl(urlOrOpts);
-          else url = urlOrOpts;
-          const rdr = new ZXing.BrowserMultiFormatReader(zxHints);
+          const url = await ocToUrl(oc);
+          const hints = new Map([
+            [ZXing.DecodeHintType.TRY_HARDER, true],
+            [ZXing.DecodeHintType.POSSIBLE_FORMATS, ZX_FMTS],
+          ]);
+          const rdr = new ZXing.BrowserMultiFormatReader(hints);
           try {
             const res = await rdr.decodeFromImageUrl(url);
             if (!res) throw new Error('nf');
             return res.getText();
-          } finally {
-            try { rdr.reset(); } catch(e) {}
-            if (needRevoke) URL.revokeObjectURL(url);
-          }
+          } finally { try { rdr.reset(); } catch(e) {} URL.revokeObjectURL(url); }
         };
 
-        // ── 4. Estrategias (~20) ──────────────────────────────────────
-        // Coordenadas para crops
-        const cx4 = Math.round(W*0.18), cy4 = Math.round(H*0.18);
-        const cw4 = Math.round(W*0.64), ch4 = Math.round(H*0.64);
-        const PAD = 40; // padding blanco que añadimos a cada variante
+        // ── 4. Estrategias (~40) ──────────────────────────────────────
+        const PAD = 50;
+        const cx4 = Math.round(W*0.15), cy4 = Math.round(H*0.15);
+        const cw4 = Math.round(W*0.70), ch4 = Math.round(H*0.70);
+
+        // Franjas horizontales estrechas (clave para superficies curvas/metálicas:
+        // el centro de la curva distorsiona menos, un strip fino lo captura)
+        const strips = [];
+        for (let pct = 0.15; pct <= 0.75; pct += 0.08) {
+          const sy = Math.round(H * pct);
+          const sh = Math.round(H * 0.22);
+          // Para cada posición: original, contraste alto, gris+contraste, binarizado
+          strips.push(() => tryDet(makeOC({ cy:sy, ch:sh, pad:PAD })));
+          strips.push(() => tryDet(makeOC({ cy:sy, ch:sh, pad:PAD, contrast:2.5, gray:true })));
+          strips.push(() => tryDet(makeOC({ cy:sy, ch:sh, pad:PAD, threshold:true })));
+          strips.push(() => tryZX(makeOC({ cy:sy, ch:sh, pad:PAD, contrast:2.0, gray:true })));
+        }
 
         const strats = [
-          // ── BarcodeDetector sobre ImageBitmap directo (sin canvas intermedio) ──
+          // ── Imagen completa — variantes básicas ──
           () => tryDet(img),
+          () => tryDet(makeOC({ pad:PAD })),
+          () => tryDet(makeOC({ pad:PAD, gray:true, contrast:2.0 })),
+          () => tryDet(makeOC({ pad:PAD, contrast:3.5, gray:true })),
+          () => tryDet(makeOC({ pad:PAD, threshold:true })),
+          () => tryDet(makeOC({ pad:PAD, invert:true })),
+          () => tryDet(makeOC({ pad:PAD, invert:true, threshold:true })),
+          () => tryDet(makeOC({ sharpen:true, pad:PAD })),
 
-          // ── BarcodeDetector + padding (para quiet zone insuficiente) ──
-          () => tryDet(makeOC({ pad: PAD })),
-          () => tryDet(makeOC({ pad: PAD, gray: true, contrast: 2.0 })),
-          () => tryDet(makeOC({ pad: PAD, contrast: 3.0, brightness: 1.05 })),
-          () => tryDet(makeOC({ pad: PAD, contrast: 1.6, gray: true })),
+          // ── Zoom centro ×1.5 y ×2 ──
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD })),
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, pad:PAD, gray:true, contrast:2.5 })),
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, pad:PAD, threshold:true })),
 
-          // ── BarcodeDetector — contraste agresivo sin padding ──
-          () => tryDet(makeOC({ contrast: 2.0, brightness: 1.05 })),
-          () => tryDet(makeOC({ contrast: 3.5, gray: true })),
-          () => tryDet(makeOC({ invert: true })),
-          () => tryDet(makeOC({ invert: true, contrast: 2.0, pad: PAD })),
+          // ── Rotaciones (etiquetas torcidas) ──
+          () => tryDet(makeOC({ rotate:90,  pad:PAD })),
+          () => tryDet(makeOC({ rotate:180, pad:PAD })),
+          () => tryDet(makeOC({ rotate:270, pad:PAD })),
 
-          // ── BarcodeDetector — rotaciones ──
-          () => tryDet(makeOC({ rotate: 90,  pad: PAD })),
-          () => tryDet(makeOC({ rotate: 180, pad: PAD })),
-          () => tryDet(makeOC({ rotate: 270, pad: PAD })),
+          // ── ZXing completo ──
+          () => tryZX(makeOC({ pad:PAD })),
+          () => tryZX(makeOC({ pad:PAD, gray:true, contrast:2.5 })),
+          () => tryZX(makeOC({ pad:PAD, threshold:true })),
+          () => tryZX(makeOC({ pad:PAD, invert:true })),
+          () => tryZX(makeOC({ pad:PAD, invert:true, threshold:true })),
+          () => tryZX(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD })),
+          () => tryZX(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD, threshold:true })),
+          () => tryZX(makeOC({ rotate:90, pad:PAD })),
 
-          // ── BarcodeDetector — zoom ×2 al centro + padding ──
-          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, pad:PAD })),
-          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, contrast:2.5, pad:PAD })),
-
-          // ── ZXing via URL — más compatible con UPC/EAN difíciles ──
-          // Usa decodeFromImageUrl que es async y más robusto que decodeFromCanvas
-          () => tryZX(makeOC({ pad: PAD })),
-          () => tryZX(makeOC({ pad: PAD, gray: true, contrast: 2.0 })),
-          () => tryZX(makeOC({ pad: PAD, contrast: 3.0 })),
-          () => tryZX(makeOC({ pad: PAD, invert: true })),
-          () => tryZX(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, pad:PAD, contrast:2.0 })),
-          () => tryZX(makeOC({ pad: PAD, rotate:90 })),
+          // ── Franjas estrechas (superficies curvas) ──
+          ...strips,
         ];
 
-        // ── 5. Ejecutar en paralelo, primer ganador ───────────────────
+        // ── 5. Paralelo — primer ganador ──────────────────────────────
         try {
           const code = await Promise.any(strats.map(s => s()));
           this._beep();
@@ -678,13 +676,51 @@
           onDetected(code.trim());
           setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2200);
         } catch(e) {
-          if (statEl) statEl.innerHTML =
-            '<span class="fail">❌ No se detectó — acerca más, mejora la luz o usa flash</span>';
-          setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 4000);
+          // ── Fallback manual: mostrar input para que el usuario escriba el código ──
+          this._mostrarFallbackManual(wrap, statEl, prevEl, onDetected);
         } finally {
           if (fotoBtn) fotoBtn.disabled = false;
         }
       },
+
+      // Fallback: si ninguna estrategia detectó el código, mostrar input manual
+      _mostrarFallbackManual(wrap, statEl, prevEl, onDetected) {
+        if (!statEl) return;
+        const uid = 'fb-' + Date.now();
+        statEl.innerHTML = `
+          <div style="font-size:.78rem;color:var(--text);margin-bottom:6px">
+            ❌ No se detectó — <b>escribe el código</b> que ves en la etiqueta:
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input id="${uid}" type="text" inputmode="numeric"
+              placeholder="Ej: 7501234567890"
+              style="flex:1;background:var(--surface);border:1.5px solid var(--accent);border-radius:8px;padding:8px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif;min-width:0"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('${uid}-ok').click()}"/>
+            <button id="${uid}-ok"
+              style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:.85rem;cursor:pointer;white-space:nowrap;font-family:'Syne',sans-serif"
+              onclick="(function(){
+                const v=document.getElementById('${uid}').value.trim();
+                if(!v){return;}
+                document.getElementById('${uid}').closest('.foto-wrap').classList.remove('visible');
+              })()">OK</button>
+          </div>`;
+        // Listener en el botón OK (no podemos usar closures en onclick inline con variables locales)
+        setTimeout(() => {
+          const btn = document.getElementById(uid + '-ok');
+          if (!btn) return;
+          btn.addEventListener('click', () => {
+            const val = document.getElementById(uid)?.value.trim();
+            if (!val) return;
+            this._beep();
+            try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+            onDetected(val);
+            if (wrap) { wrap.classList.remove('visible'); }
+          });
+          // Auto-focus al input
+          document.getElementById(uid)?.focus();
+        }, 80);
+      },
+
 
       stop({ containerId, btnId }) {
         this.active      = false;
