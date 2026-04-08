@@ -162,6 +162,17 @@
         let lastCode     = null; // último código detectado
         let confirmCount = 0;    // frames consecutivos con el mismo código
         const CONFIRM    = 1;    // 1 frame = confirmación instantánea
+        let failFrames   = 0;    // frames consecutivos sin detectar nada
+
+        // ZXing como motor auxiliar para códigos difíciles
+        let zxingAux = null;
+        const getZxingAux = async () => {
+          if (zxingAux) return zxingAux;
+          if (typeof ZXing === 'undefined') return null;
+          const hints = new Map([[ZXing.DecodeHintType.TRY_HARDER, true]]);
+          zxingAux = new ZXing.BrowserMultiFormatReader(hints, 0);
+          return zxingAux;
+        };
 
         // Dibuja el polígono alrededor del código en el canvas overlay
         const drawBox = (barcode, vw, vh, confirmed) => {
@@ -266,32 +277,32 @@
                 }
               }
 
-              // Intentos 2-7: recortes con contraste
+              // Intentos 2-7: recortes EN PARALELO con Promise.any() — mucho más rápido
+              // Todos los crops se ejecutan al mismo tiempo, tomamos el primero que tenga éxito
               if (!found.length) {
-                for (const z of getCrops(vw, vh)) {
+                const cropPromises = getCrops(vw, vh).map(async z => {
                   const dw = Math.floor(z.sw * z.scale);
                   const dh = Math.floor(z.sh * z.scale);
-                  offscreen.width  = dw;
-                  offscreen.height = dh;
-                  offCtx.filter = `contrast(${z.contrast}) brightness(${z.bright||1.05})`;
-                  offCtx.drawImage(video, z.sx, z.sy, z.sw, z.sh, 0, 0, dw, dh);
-                  offCtx.filter = 'none';
-                  // Los cornerPoints del recorte necesitan ser reescalados al frame completo
-                  const cropFound = await det.detect(offscreen);
-                  if (cropFound.length) {
-                    // Ajustar cornerPoints de vuelta a coordenadas del video original
-                    const xOff = z.sx, yOff = z.sy, xs = z.sw/dw, ys = z.sh/dh;
-                    cropFound[0].cornerPoints = cropFound[0].cornerPoints.map(p => ({
-                      x: p.x * xs + xOff,
-                      y: p.y * ys + yOff,
-                    }));
-                    found = cropFound;
-                    break;
-                  }
-                }
+                  const oc  = new OffscreenCanvas(dw, dh);
+                  const oc_ctx = oc.getContext('2d', { willReadFrequently: true });
+                  oc_ctx.filter = `contrast(${z.contrast}) brightness(${z.bright||1.05})`;
+                  oc_ctx.drawImage(video, z.sx, z.sy, z.sw, z.sh, 0, 0, dw, dh);
+                  oc_ctx.filter = 'none';
+                  const cropFound = await det.detect(oc);
+                  if (!cropFound.length) throw new Error('nf');
+                  // Ajustar cornerPoints al espacio del video original
+                  const xs = z.sw / dw, ys = z.sh / dh;
+                  cropFound[0].cornerPoints = cropFound[0].cornerPoints.map(p => ({
+                    x: p.x * xs + z.sx,
+                    y: p.y * ys + z.sy,
+                  }));
+                  return cropFound;
+                });
+                try { found = await Promise.any(cropPromises); } catch(e) {}
               }
 
               if (found.length) {
+                failFrames = 0;
                 const code = found[0].rawValue;
                 if (code === lastCode) {
                   confirmCount++;
@@ -314,15 +325,33 @@
                 lastCode     = null;
                 confirmCount = 0;
                 clearBox();
+                // Si llevamos muchos frames fallidos, probar ZXing como motor alternativo
+                failFrames++;
+                if (failFrames > 30 && typeof ZXing !== 'undefined') {
+                  try {
+                    const zx = await getZxingAux();
+                    if (zx) {
+                      const zRes = await zx.decodeFromVideoElement(video);
+                      if (zRes) {
+                        failFrames = 0;
+                        flashConfirm();
+                        this._beep();
+                        try { navigator.vibrate?.([30, 10, 60]); } catch(e2) {}
+                        onDetected(zRes.getText());
+                        return;
+                      }
+                    }
+                  } catch(e2) {}
+                }
               }
             } catch(e) {}
             this._processing = false;
           }
 
-          this.loopId = setTimeout(loop, 0);
+          this.loopId = setTimeout(loop, 16); // ~60fps cap, evita saturar el hilo principal
         };
 
-        this.loopId = setTimeout(loop, 0);
+        this.loopId = setTimeout(loop, 16);
       },
 
       async toggle({ videoId, containerId, btnId, onCode }) {
@@ -536,6 +565,13 @@
     if (tab === 'stock')     renderStock();
     if (tab === 'ventas')    renderVentas();
     if (tab === 'dashboard') renderDashboard();
+    // Conectar búsqueda de ventas cuando se activa la pestaña
+    if (tab === 'ventas') {
+      const vs = document.getElementById('ventas-search');
+      if (vs && !vs._wired) { vs._wired = true; vs.addEventListener('input', renderVentas); }
+      const vf = document.getElementById('ventas-filtro');
+      if (vf && !vf._wired) { vf._wired = true; vf.addEventListener('change', renderVentas); }
+    }
   };
 
   // ── PRODUCTOS — colección COMPARTIDA (sin filtro por usuario) ──────
@@ -772,13 +808,24 @@
   function renderVentas() {
     const cont   = document.getElementById('ventas-list');
     if (!cont) return;
-    const filtro = document.getElementById('ventas-filtro')?.value || 'hoy';
+    const filtro   = document.getElementById('ventas-filtro')?.value || 'hoy';
+    const busqueda = (document.getElementById('ventas-search')?.value || '').toLowerCase().trim();
     const hoy    = new Date(); hoy.setHours(0,0,0,0);
     let filtered = ventas;
     if (filtro==='hoy')    filtered = ventas.filter(v => v.fecha?.toDate() >= hoy);
     if (filtro==='semana') { const s=new Date(hoy); s.setDate(s.getDate()-7); filtered=ventas.filter(v=>v.fecha?.toDate()>=s); }
     if (filtro==='mes')    { const m=new Date(hoy); m.setDate(m.getDate()-30); filtered=ventas.filter(v=>v.fecha?.toDate()>=m); }
-    if (!filtered.length) { cont.innerHTML='<div class="empty-state">Sin ventas en este período</div>'; return; }
+    // Filtro por nombre de producto o cliente
+    if (busqueda) filtered = filtered.filter(v =>
+      (v.productoNombre||'').toLowerCase().includes(busqueda) ||
+      (v.cliente||'').toLowerCase().includes(busqueda)
+    );
+    if (!filtered.length) {
+      cont.innerHTML = busqueda
+        ? `<div class="empty-state">Sin resultados para "${busqueda}"</div>`
+        : '<div class="empty-state">Sin ventas en este período</div>';
+      return;
+    }
 
     // Resumen del período
     const totalEfectivo = filtered.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
@@ -1511,6 +1558,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <option value="mes">🗓 Últimos 30 días</option>
         <option value="todo">📋 Todo el historial</option>
       </select>
+      <input class="search-bar" id="ventas-search" placeholder="🔍 Buscar por producto o cliente..." style="margin-top:8px"/>
       <div id="ventas-list"><div class="empty-state">Cargando...</div></div>
     </div>
 
