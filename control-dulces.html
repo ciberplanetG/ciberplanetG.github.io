@@ -470,6 +470,165 @@
         }
       },
 
+      // ── CAPTURAR FOTO Y ANALIZAR (para códigos difíciles) ──────────
+      // Congela un frame de la cámara y lo decodifica con ~15 estrategias en paralelo:
+      // múltiples contrastes, zoom, rotaciones, inversión, BarcodeDetector + ZXing.
+      async capturarYAnalizar(videoId, previewId, statusId, onDetected) {
+        const video  = document.getElementById(videoId);
+        const prevEl = document.getElementById(previewId);
+        const statEl = document.getElementById(statusId);
+        const wrap   = prevEl ? prevEl.closest('.foto-wrap') : null;
+
+        if (!this.active || !this.stream || !video) {
+          if (statEl) statEl.innerHTML = '<span class="fail">⚠️ Primero activa la cámara</span>';
+          if (wrap) wrap.classList.add('visible');
+          setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2500);
+          return;
+        }
+
+        // Deshabilitar botón mientras analiza
+        const fotoBtn = document.getElementById(statusId.replace('stat','btn').replace('-agregar','').replace('-venta','').replace('foto-','btn-foto-'));
+        if (fotoBtn) fotoBtn.disabled = true;
+        if (statEl) statEl.innerHTML = '<span class="spin">Capturando…</span>';
+        if (wrap) wrap.classList.add('visible');
+
+        // ── 1. Capturar frame de máxima calidad ──────────────────────
+        let img = null;
+        const track = this.stream?.getVideoTracks()[0];
+        if (track && typeof ImageCapture !== 'undefined') {
+          try { img = await new ImageCapture(track).grabFrame(); } catch(e) {}
+        }
+        if (!img) {
+          const W2 = video.videoWidth, H2 = video.videoHeight;
+          if (!W2 || !H2) {
+            if (statEl) statEl.innerHTML = '<span class="fail">❌ Cámara no lista</span>';
+            if (fotoBtn) fotoBtn.disabled = false;
+            setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2000);
+            return;
+          }
+          const tmp = new OffscreenCanvas(W2, H2);
+          tmp.getContext('2d').drawImage(video, 0, 0);
+          img = await createImageBitmap(tmp);
+        }
+
+        const W = img.width, H = img.height;
+
+        // ── 2. Mostrar miniatura ──────────────────────────────────────
+        if (prevEl) {
+          const th = Math.min(72, Math.round(H * 96 / W));
+          const tw = Math.round(W * th / H);
+          prevEl.width = tw; prevEl.height = th;
+          prevEl.getContext('2d').drawImage(img, 0, 0, tw, th);
+        }
+
+        if (statEl) statEl.innerHTML = '<span class="spin">Analizando…</span>';
+
+        // ── 3. Helpers ────────────────────────────────────────────────
+        // Crea un OffscreenCanvas aplicando recorte, escala y filtros CSS
+        const makeOC = ({ cx=0, cy=0, cw=W, ch=H, scale=1, contrast=1, brightness=1, invert=false, rotate=0 } = {}) => {
+          const dw = Math.round(cw * scale), dh = Math.round(ch * scale);
+          const rotated = rotate === 90 || rotate === 270;
+          const oc  = new OffscreenCanvas(rotated ? dh : dw, rotated ? dw : dh);
+          const ctx = oc.getContext('2d', { willReadFrequently: true });
+          const filters = [];
+          if (contrast   !== 1) filters.push(`contrast(${contrast})`);
+          if (brightness !== 1) filters.push(`brightness(${brightness})`);
+          if (invert)           filters.push('invert(1)');
+          if (filters.length)   ctx.filter = filters.join(' ');
+          if (rotate !== 0) {
+            ctx.translate(oc.width / 2, oc.height / 2);
+            ctx.rotate(rotate * Math.PI / 180);
+            ctx.drawImage(img, cx, cy, cw, ch, -dw/2, -dh/2, dw, dh);
+          } else {
+            ctx.drawImage(img, cx, cy, cw, ch, 0, 0, dw, dh);
+          }
+          return oc;
+        };
+
+        // BarcodeDetector: devuelve código o lanza
+        let _det = null;
+        const tryDet = async (oc) => {
+          if (!('BarcodeDetector' in window)) throw new Error('no');
+          if (!_det) {
+            let fmts;
+            try { fmts = await BarcodeDetector.getSupportedFormats(); }
+            catch(e) { fmts = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','itf','codabar','qr_code','data_matrix','pdf417','aztec']; }
+            _det = new BarcodeDetector({ formats: fmts });
+          }
+          const r = await _det.detect(oc);
+          if (!r.length) throw new Error('nf');
+          return r[0].rawValue;
+        };
+
+        // ZXing: devuelve código o lanza
+        const tryZX = async (oc) => {
+          if (typeof ZXing === 'undefined') throw new Error('no');
+          const c = document.createElement('canvas');
+          c.width = oc.width; c.height = oc.height;
+          c.getContext('2d').drawImage(oc, 0, 0);
+          const hints = new Map([
+            [ZXing.DecodeHintType.TRY_HARDER, true],
+            [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+              ZXing.BarcodeFormat.EAN_13,   ZXing.BarcodeFormat.EAN_8,
+              ZXing.BarcodeFormat.UPC_A,    ZXing.BarcodeFormat.UPC_E,
+              ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+              ZXing.BarcodeFormat.CODE_93,  ZXing.BarcodeFormat.ITF,
+              ZXing.BarcodeFormat.CODABAR,  ZXing.BarcodeFormat.QR_CODE,
+              ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417,
+              ZXing.BarcodeFormat.AZTEC,    ZXing.BarcodeFormat.RSS_14,
+              ZXing.BarcodeFormat.RSS_EXPANDED,
+            ]]
+          ]);
+          const rdr = new ZXing.BrowserMultiFormatReader(hints, 0);
+          try {
+            const res = await rdr.decodeFromCanvas(c);
+            if (!res) throw new Error('nf');
+            return res.getText();
+          } finally { try { rdr.reset(); } catch(e) {} }
+        };
+
+        // ── 4. Construir las ~15 estrategias ─────────────────────────
+        const cx4 = Math.round(W*0.20), cy4 = Math.round(H*0.20);
+        const cw4 = Math.round(W*0.60), ch4 = Math.round(H*0.60);
+        const strats = [
+          // BarcodeDetector — variantes de contraste/brillo
+          () => tryDet(makeOC()),
+          () => tryDet(makeOC({ contrast:1.8, brightness:1.05 })),
+          () => tryDet(makeOC({ contrast:2.5, brightness:1.1  })),
+          () => tryDet(makeOC({ contrast:3.5, brightness:1.0  })),
+          () => tryDet(makeOC({ invert:true  })),
+          () => tryDet(makeOC({ invert:true, contrast:2.0 })),
+          // BarcodeDetector — rotaciones (para etiquetas torcidas)
+          () => tryDet(makeOC({ rotate: 90  })),
+          () => tryDet(makeOC({ rotate: 180 })),
+          () => tryDet(makeOC({ rotate: 270 })),
+          // BarcodeDetector — zoom al centro ×2 (código pequeño o alejado)
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0 })),
+          () => tryDet(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:2.0, contrast:2.5, brightness:1.1 })),
+          // BarcodeDetector — franja central horizontal (EAN-13 en posición normal)
+          () => tryDet(makeOC({ cy:Math.round(H*0.30), ch:Math.round(H*0.40), contrast:2.0 })),
+          // ZXing — mayor compatibilidad de formatos
+          () => tryZX(makeOC()),
+          () => tryZX(makeOC({ contrast:2.0, brightness:1.1 })),
+          () => tryZX(makeOC({ cx:cx4, cy:cy4, cw:cw4, ch:ch4, scale:1.5, contrast:2.0 })),
+        ];
+
+        // ── 5. Ejecutar todo en paralelo, tomar el primero que gane ──
+        try {
+          const code = await Promise.any(strats.map(s => s()));
+          this._beep();
+          try { navigator.vibrate?.([30, 10, 60]); } catch(e) {}
+          if (statEl) statEl.innerHTML = `<span class="ok">✓ ${code}</span>`;
+          onDetected(code.trim());
+          setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 2200);
+        } catch(e) {
+          if (statEl) statEl.innerHTML = '<span class="fail">❌ No se detectó — intenta más cerca o con flash</span>';
+          setTimeout(() => { if (wrap) wrap.classList.remove('visible'); }, 3500);
+        } finally {
+          if (fotoBtn) fotoBtn.disabled = false;
+        }
+      },
+
       stop({ containerId, btnId }) {
         this.active      = false;
         this._processing = false;
@@ -953,6 +1112,14 @@
     }
   });
 
+  // Callback compartido para foto-análisis en sección Agregar
+  window.codigoAgregarDetectado = (code) => {
+    document.getElementById('p-codigo').value = code;
+    document.getElementById('scan-result-text').textContent = '✓ Código: ' + code;
+    showToast('Escaneado: ' + code);
+    verificarExistencia();
+  };
+
   // ── CÁMARA VENTAS ─────────────────────────────────────────────────
   function buscarProductoPorCodigo(code) {
     const p = productos.find(x => (x.codigo||'').trim() === code.trim());
@@ -972,6 +1139,9 @@
     videoId: 'video-preview-venta', containerId: 'camera-container-venta', btnId: 'btn-camara-venta',
     onCode: (code) => buscarProductoPorCodigo(code)
   });
+
+  // Callback compartido para foto-análisis en sección Ventas
+  window.codigoVentaDetectado = (code) => buscarProductoPorCodigo(code);
 
   window.activarLectorVenta = () => {
     document.getElementById('scanner-hidden-venta').focus();
@@ -1311,6 +1481,18 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .btn-del-venta{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:1rem;padding:2px 4px;border-radius:6px;transition:color .2s;line-height:1}
 .btn-del-venta:hover{color:var(--red)}
 
+/* FOTO ANÁLISIS */
+.btn-foto{display:flex;align-items:center;gap:6px;background:rgba(245,200,66,.12);border:1.5px dashed var(--accent);color:var(--accent);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;transition:all .2s;white-space:nowrap}
+.btn-foto:hover{background:rgba(245,200,66,.22)}
+.btn-foto:disabled{opacity:.4;cursor:not-allowed}
+.foto-wrap{display:none;align-items:center;gap:12px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-top:8px}
+.foto-wrap.visible{display:flex}
+.foto-preview{border-radius:8px;border:1.5px solid var(--border);flex-shrink:0;object-fit:contain;max-width:96px;max-height:72px}
+.foto-status{font-size:.82rem;color:var(--text);line-height:1.45;flex:1}
+.foto-status .ok{color:#00FF88;font-weight:700}
+.foto-status .fail{color:var(--red)}
+.foto-status .spin::before{content:'⏳ '}
+
 @media(max-width:420px){.form-grid{grid-template-columns:1fr}.dash-grid{grid-template-columns:1fr}.scan-btn-row{flex-direction:column}}
 </style>
 </head>
@@ -1375,8 +1557,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
             <div class="cam-controls">
               <button class="btn-flash" id="btn-flash-camera-container"
                 onclick="_scannerAgregar.toggleFlash()">🔦 Flash</button>
+              <button class="btn-foto" id="btn-foto-agregar"
+                onclick="_scannerAgregar.capturarYAnalizar('video-preview','foto-prev-agregar','foto-stat-agregar', codigoAgregarDetectado)">📸 Capturar</button>
               <span class="cam-tip">Acerca el código al recuadro</span>
             </div>
+          </div>
+          <!-- Preview foto análisis -->
+          <div class="foto-wrap" id="foto-wrap-agregar">
+            <canvas class="foto-preview" id="foto-prev-agregar"></canvas>
+            <div class="foto-status" id="foto-stat-agregar"></div>
           </div>
           <div class="scan-result" id="scan-result-text"></div>
         </div>
@@ -1515,8 +1704,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
                 <div class="cam-controls">
                   <button class="btn-flash" id="btn-flash-camera-container-venta"
                     onclick="_scannerVentas.toggleFlash()">🔦 Flash</button>
+                  <button class="btn-foto" id="btn-foto-venta"
+                    onclick="_scannerVentas.capturarYAnalizar('video-preview-venta','foto-prev-venta','foto-stat-venta', codigoVentaDetectado)">📸 Capturar</button>
                   <span class="cam-tip">Acerca el código al recuadro</span>
                 </div>
+              </div>
+              <!-- Preview foto análisis -->
+              <div class="foto-wrap" id="foto-wrap-venta">
+                <canvas class="foto-preview" id="foto-prev-venta"></canvas>
+                <div class="foto-status" id="foto-stat-venta"></div>
               </div>
               <div class="scan-result" id="scan-result-venta"></div>
             </div>
