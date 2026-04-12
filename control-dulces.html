@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -1390,22 +1391,146 @@
         ${top.map(([n,d])=>`<div class="top-row"><span>${n}</span><span>${d.cantidad} pzas · <b>$${d.total.toFixed(2)}</b></span></div>`).join('')}
       </div>`:''}
       <button class="btn-excel" onclick="exportarExcel()">📊 Exportar Excel del día</button>`;
+
+    // Renderizar gráfica después de insertar el HTML
+    setTimeout(() => renderGraficaVentas(), 50);
   }
+
+  // ── GRÁFICA DE VENTAS 30 DÍAS ─────────────────────────────────────
+  let _graficaChart = null;
+
+  window.renderGraficaVentas = function(desdeFecha, hastaFecha) {
+    const cont = document.getElementById('dashboard-grafica');
+    if (!cont) return;
+
+    // Rango: por defecto últimos 30 días
+    const hasta = hastaFecha ? new Date(hastaFecha + 'T23:59:59') : new Date();
+    const desde = desdeFecha ? new Date(desdeFecha + 'T00:00:00') : new Date(hasta);
+    if (!desdeFecha) desde.setDate(hasta.getDate() - 29);
+
+    // Generar array de días en rango
+    const dias = [];
+    const cur = new Date(desde); cur.setHours(0,0,0,0);
+    const fin = new Date(hasta); fin.setHours(0,0,0,0);
+    while (cur <= fin) {
+      dias.push(new Date(cur));
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    // Agrupar ventas dulces por día
+    const dulcesPorDia = dias.map(d => {
+      const sig = new Date(d); sig.setDate(sig.getDate()+1);
+      return ventas
+        .filter(v => { const f=v.fecha?.toDate(); return f>=d && f<sig && v.tipo==='venta'; })
+        .reduce((a,v)=>a+(v.total||0),0);
+    });
+
+    // Agrupar ventas ciber por día
+    const ciberPorDia = dias.map(d => {
+      const sig = new Date(d); sig.setDate(sig.getDate()+1);
+      return ciberTrabajos
+        .filter(t => { const f=t.fecha?.toDate(); return f>=d && f<sig && t.tipo==='cobrado'; })
+        .reduce((a,t)=>a+(t.total||0),0);
+    });
+
+    const labels = dias.map(d => d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'}));
+
+    // Destruir chart anterior si existe
+    if (_graficaChart) { _graficaChart.destroy(); _graficaChart = null; }
+
+    const canvas = document.getElementById('grafica-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    _graficaChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: '🍬 Dulces',
+            data: dulcesPorDia,
+            borderColor: '#f5c842',
+            backgroundColor: 'rgba(245,200,66,0.10)',
+            borderWidth: 2.5,
+            pointRadius: dias.length <= 15 ? 4 : 2,
+            pointBackgroundColor: '#f5c842',
+            tension: 0.35,
+            fill: true
+          },
+          {
+            label: '🖥️ Ciber',
+            data: ciberPorDia,
+            borderColor: '#4ecdc4',
+            backgroundColor: 'rgba(78,205,196,0.10)',
+            borderWidth: 2.5,
+            pointRadius: dias.length <= 15 ? 4 : 2,
+            pointBackgroundColor: '#4ecdc4',
+            tension: 0.35,
+            fill: true
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            labels: { color: '#f0f0f5', font: { family: 'DM Sans', size: 12 }, boxWidth: 14 }
+          },
+          tooltip: {
+            backgroundColor: '#22222e',
+            borderColor: '#2e2e3e',
+            borderWidth: 1,
+            titleColor: '#f0f0f5',
+            bodyColor: '#8888aa',
+            callbacks: {
+              label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: '#8888aa', font: { size: 10 }, maxRotation: 45 },
+            grid: { color: 'rgba(46,46,62,0.6)' }
+          },
+          y: {
+            ticks: { color: '#8888aa', font: { size: 10 }, callback: v => '$'+v },
+            grid: { color: 'rgba(46,46,62,0.6)' },
+            beginAtZero: true
+          }
+        }
+      }
+    });
+  };
 
   // ── EXCEL ─────────────────────────────────────────────────────────
   window.exportarExcel = () => {
     const hoy = new Date(); hoy.setHours(0,0,0,0);
     const vh  = ventas.filter(v=>v.fecha?.toDate()>=hoy);
-    if (!vh.length) { showToast('No hay ventas hoy','error'); return; }
+    const ch  = ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy);
     const wb  = XLSX.utils.book_new();
+
+    // Hoja ventas dulces (aunque esté vacía)
     const data= [['Producto','Cantidad','Precio Unit.','Costo Unit.','Total','Ganancia','Tipo','Cliente','Vendedor','Hora']];
     vh.forEach(v=>data.push([v.productoNombre,v.cantidad,v.precioUnitario,v.costoUnitario,
       v.total,v.gananciaTotal,v.tipo,v.cliente||'',v.vendedor,v.fecha?.toDate().toLocaleTimeString('es-MX')]));
     const tv=vh.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
     const td=vh.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
     const tg=vh.reduce((a,v)=>a+(v.gananciaTotal||0),0);
-    data.push([],[' RESUMEN'],['Efectivo','','','',tv.toFixed(2)],['Debes','','','',td.toFixed(2)],['Ganancia','','','',tg.toFixed(2)]);
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(data),'Ventas');
+    data.push([],[' RESUMEN DULCES'],['Efectivo','','','',tv.toFixed(2)],['Debes','','','',td.toFixed(2)],['Ganancia','','','',tg.toFixed(2)]);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(data),'Ventas Dulces');
+
+    // Hoja ventas ciber (aunque esté vacía)
+    const dataCiber = [['Servicio','Total','Ganancia','Tipo','Cliente','Vendedor','Hora']];
+    ch.forEach(t=>dataCiber.push([t.servicioNombre,t.total,t.gananciaTotal,t.tipo,t.cliente||'',t.vendedor,t.fecha?.toDate().toLocaleTimeString('es-MX')]));
+    const tc2=ch.filter(t=>t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    const tf2=ch.filter(t=>t.tipo==='fiado').reduce((a,t)=>a+(t.total||0),0);
+    const tg2=ch.reduce((a,t)=>a+(t.gananciaTotal||0),0);
+    dataCiber.push([],[' RESUMEN CIBER'],['Cobrado','',tc2.toFixed(2)],['Fiados','',tf2.toFixed(2)],['Ganancia','',tg2.toFixed(2)]);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(dataCiber),'Ventas Ciber');
+
     const ws2=[['Producto','Código','Stock','Costo/pza','Precio Venta','Ganancia/pza']];
     productos.forEach(p=>ws2.push([p.nombre,p.codigo||'',p.stock,(p.costoPieza||0).toFixed(2),(p.precioVenta||0).toFixed(2),(p.ganancia||0).toFixed(2)]));
     XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(ws2),'Stock');
@@ -2919,8 +3044,6 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
     <div class="topbar-right">
       <span id="conn-dot" title="Verificando conexión..." style="width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block;flex-shrink:0;transition:background .4s"></span>
       <span id="user-email"></span>
-      <button class="logout-btn" onclick="abrirVisionConfig()" title="Configurar Google Vision API"
-        style="background:rgba(245,200,66,.15);border-color:rgba(245,200,66,.4);color:var(--accent)">☁️</button>
       <button class="logout-btn" onclick="doLogout()">Salir</button>
     </div>
   </div>
@@ -2931,6 +3054,28 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
     <div class="tab-content active" id="tab-dashboard">
       <div class="page-title">📊 Resumen del día</div>
       <div id="dashboard-content"><div class="empty-state">Cargando...</div></div>
+      <!-- GRÁFICA DE VENTAS -->
+      <div id="dashboard-grafica" style="margin-top:18px">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">📈 Ventas por día</div>
+        <!-- Filtro de fechas -->
+        <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:flex-end">
+          <div style="flex:1;min-width:120px">
+            <label style="font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Desde</label>
+            <input type="date" id="grafica-desde" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;color:var(--text);font-size:.85rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          </div>
+          <div style="flex:1;min-width:120px">
+            <label style="font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
+            <input type="date" id="grafica-hasta" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;color:var(--text);font-size:.85rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          </div>
+          <button onclick="renderGraficaVentas(document.getElementById('grafica-desde').value||undefined, document.getElementById('grafica-hasta').value||undefined)"
+            style="background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:.82rem;padding:9px 16px;border:none;border-radius:10px;cursor:pointer;white-space:nowrap">🔍 Ver</button>
+          <button onclick="document.getElementById('grafica-desde').value='';document.getElementById('grafica-hasta').value='';renderGraficaVentas()"
+            style="background:var(--surface2);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:.82rem;padding:9px 14px;border:1px solid var(--border);border-radius:10px;cursor:pointer;white-space:nowrap">↺ 30 días</button>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;height:220px;position:relative">
+          <canvas id="grafica-canvas"></canvas>
+        </div>
+      </div>
     </div>
 
     <!-- AGREGAR -->
@@ -3545,42 +3690,7 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
   </nav>
 </div>
 
-<!-- VISION API CONFIG MODAL -->
-<div id="vision-modal" class="pin-modal-overlay" onclick="if(event.target===this)cerrarVisionConfig()"
-  style="display:none;align-items:center;justify-content:center">
-  <div class="pin-modal" style="max-width:380px">
-    <div class="pin-modal-title">☁️ Google Vision API</div>
-    <div class="pin-modal-sub" style="line-height:1.55">
-      Fallback en la nube para códigos difíciles.<br>
-      <span style="color:var(--muted)">Si el escáner local falla, Vision API intenta leer el código usando inteligencia artificial de Google.</span>
-    </div>
 
-    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:.78rem;color:var(--muted);line-height:1.6">
-      <b style="color:var(--text)">¿Cómo obtener tu API Key?</b><br>
-      1. Ve a <b style="color:var(--accent)">console.cloud.google.com</b><br>
-      2. Crea un proyecto (o usa uno existente)<br>
-      3. Activa la <b style="color:var(--text)">Cloud Vision API</b><br>
-      4. Ve a <b style="color:var(--text)">APIs y servicios → Credenciales</b><br>
-      5. Crea una <b style="color:var(--text)">Clave de API</b> y pégala abajo
-    </div>
-
-    <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:6px">Tu API Key de Vision:</label>
-    <input id="vision-key-input" type="text"
-      placeholder="AIzaSy..."
-      style="width:100%;background:var(--surface2);border:1.5px solid var(--border);border-radius:10px;padding:11px 14px;color:var(--text);font-size:.85rem;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:6px;transition:border-color .2s;box-sizing:border-box"
-      onfocus="this.style.borderColor='var(--accent)'"
-      onblur="this.style.borderColor='var(--border)'"/>
-
-    <div id="vision-status" style="font-size:.78rem;min-height:18px;margin-bottom:12px;color:var(--muted)"></div>
-
-    <div class="pin-btn-row">
-      <button class="pin-btn-cancel" onclick="cerrarVisionConfig()">Cancelar</button>
-      <button class="pin-btn-confirm" style="background:var(--accent);color:#000"
-        onclick="guardarVisionKey()">💾 Guardar</button>
-    </div>
-    <div id="vision-key-status-bar" style="margin-top:10px;font-size:.75rem;text-align:center;color:var(--muted)"></div>
-  </div>
-</div>
 
 <!-- PIN MODAL — solo visible para el dueño -->
 <div id="pin-modal" class="pin-modal-overlay" onclick="if(event.target===this)cerrarPinModal()">
