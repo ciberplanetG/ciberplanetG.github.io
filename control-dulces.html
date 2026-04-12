@@ -2284,7 +2284,7 @@
     let totalCofre = 0;
     if (seccion === 'ciber' && _cofreData.ciber) {
       const c = _cofreData.ciber;
-      totalCofre = (c.m10||0)*10 + (c.m5||0)*5 + (c.m2||0)*2 + (c.m1||0)*1 + (c.m050||0)*0.5;
+      totalCofre = (c.m10||0) + (c.m5||0) + (c.m2||0) + (c.m1||0) + (c.m050||0);
     }
     const totalConCofre = totalCaja + totalCofre;
     const hoy = new Date(); hoy.setHours(0,0,0,0);
@@ -2337,20 +2337,19 @@
     const d = _cofreData[sec];
     if (!d) { cont.innerHTML = '<div class="empty-state" style="padding:12px 0;font-size:.83rem">Sin datos</div>'; return; }
     const filas = [
-      { label:'M10', qty: d.m10||0, val:10  },
-      { label:'M5',  qty: d.m5||0,  val:5   },
-      { label:'M2',  qty: d.m2||0,  val:2   },
-      { label:'M1',  qty: d.m1||0,  val:1   },
-      { label:'M0.50', qty: d.m050||0, val:0.5 },
+      { label:'M10',    amt: d.m10||0  },
+      { label:'M5',     amt: d.m5||0   },
+      { label:'M2',     amt: d.m2||0   },
+      { label:'M1',     amt: d.m1||0   },
+      { label:'M0.50',  amt: d.m050||0 },
     ];
-    const total = filas.reduce((a,f)=>a+f.qty*f.val,0);
+    const total = filas.reduce((a,f)=>a+f.amt, 0);
     cont.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
         ${filas.map(f=>`
           <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center">
             <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">${f.label}</div>
-            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem">${f.qty}</div>
-            <div style="font-size:.7rem;color:var(--accent)">${f.qty>0?'$'+(f.qty*f.val).toFixed(f.val<1?2:0):'-'}</div>
+            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem;color:var(--accent)">$${f.amt>0?f.amt.toFixed(2):'-'}</div>
           </div>`).join('')}
         <div style="background:rgba(120,80,255,.1);border:1px solid rgba(120,80,255,.4);border-radius:8px;padding:8px;text-align:center;grid-column:span 3">
           <div style="font-size:.65rem;color:#a78bfa;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Total cofre</div>
@@ -2399,10 +2398,8 @@
   }
 
   window.calcCofreEditTotal = () => {
-    const vals = { m10:10, m5:5, m2:2, m1:1, m050:0.5 };
-    const total = Object.entries(vals).reduce((a,[k,v])=>{
-      return a + (parseFloat(document.getElementById(`cofre-edit-${k}`)?.value)||0)*v;
-    },0);
+    const ids = ['m10','m5','m2','m1','m050'];
+    const total = ids.reduce((a,k)=> a + (parseFloat(document.getElementById(`cofre-edit-${k}`)?.value)||0), 0);
     const el = document.getElementById('cofre-edit-total');
     if (el) el.textContent = `$${total.toFixed(2)}`;
   };
@@ -3416,27 +3413,27 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
         <span style="font-size:.88rem;min-width:70px">$10 c/u</span>
         <input type="number" id="cofre-edit-m10" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
-          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif;-webkit-appearance:none;-moz-appearance:textfield;appearance:textfield"/>
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
         <span style="font-size:.88rem;min-width:70px">$5 c/u</span>
         <input type="number" id="cofre-edit-m5" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
-          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif;-webkit-appearance:none;-moz-appearance:textfield;appearance:textfield"/>
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
         <span style="font-size:.88rem;min-width:70px">$2 c/u</span>
         <input type="number" id="cofre-edit-m2" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
-          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif;-webkit-appearance:none;-moz-appearance:textfield;appearance:textfield"/>
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
         <span style="font-size:.88rem;min-width:70px">$1 c/u</span>
         <input type="number" id="cofre-edit-m1" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
-          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif;-webkit-appearance:none;-moz-appearance:textfield;appearance:textfield"/>
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
         <span style="font-size:.88rem;min-width:70px">$0.50 c/u</span>
         <input type="number" id="cofre-edit-m050" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
-          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif;-webkit-appearance:none;-moz-appearance:textfield;appearance:textfield"/>
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
       </div>
     </div>
     <div style="text-align:center;background:rgba(120,80,255,.1);border:1px solid rgba(120,80,255,.4);border-radius:10px;padding:10px;margin-bottom:14px">
