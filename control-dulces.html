@@ -1832,6 +1832,11 @@
   // ── SISTEMA DE TICKET CIBER ───────────────────────────────────────
   let _ticketLineas = [];
 
+  // Funciones expuestas para los oninput inline (el módulo no es accesible desde el HTML)
+  window._setLineaDesc   = (i, v) => { _ticketLineas[i].desc   = v; };
+  window._setLineaQty    = (i, v) => { _ticketLineas[i].qty    = parseFloat(v)||1;    actualizarTotalTicket(); };
+  window._setLineaPrecio = (i, v) => { _ticketLineas[i].precio = parseFloat(v)||0;    actualizarTotalTicket(); };
+
   function renderTicketLineas() {
     const cont = document.getElementById('ticket-lineas');
     if (!cont) return;
@@ -1848,11 +1853,11 @@
     _ticketLineas.map((l,i) => `
       <div class="ticket-linea">
         <input class="ticket-linea-desc" type="text" value="${l.desc}" placeholder="Servicio / producto…"
-          oninput="_ticketLineas[${i}].desc=this.value" list="ciber-servicios-dl"/>
+          oninput="_setLineaDesc(${i},this.value)" list="ciber-servicios-dl"/>
         <input class="ticket-linea-qty" type="number" value="${l.qty}" min="1" inputmode="numeric"
-          oninput="_ticketLineas[${i}].qty=parseFloat(this.value)||1;actualizarTotalTicket()"/>
+          oninput="_setLineaQty(${i},this.value)"/>
         <input class="ticket-linea-precio" type="number" value="${l.precio||''}" placeholder="0.00" step="0.01" inputmode="decimal"
-          oninput="_ticketLineas[${i}].precio=parseFloat(this.value)||0;actualizarTotalTicket()"/>
+          oninput="_setLineaPrecio(${i},this.value)"/>
         <button class="ticket-linea-del" onclick="eliminarLineaTicket(${i})">✕</button>
       </div>`).join('');
 
@@ -2248,14 +2253,11 @@
     const p = seccion === 'dulces' ? 'cd' : 'cc';
     const monedaIds  = [`${p}-m10`,`${p}-m5`,`${p}-m2`,`${p}-m1`,`${p}-m050`];
     const billeteIds = [`${p}-b1000`,`${p}-b500`,`${p}-b200`,`${p}-b100`,`${p}-b50`,`${p}-b20`];
-    // Suma directa — el usuario escribe el total en pesos, sin multiplicar
     const sumM = monedaIds.reduce((a,id)  => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
     const sumB = billeteIds.reduce((a,id) => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
     const totalCaja = sumM + sumB;
     document.getElementById(`${p}-total-monedas`).textContent = `Total monedas: $${sumM.toFixed(2)}`;
     document.getElementById(`${p}-total-billetes`).textContent = `Total billetes: $${sumB.toFixed(2)}`;
-
-    // Cofre — se suma al total para AMBAS secciones (el cofre no se gasta, siempre se acumula)
     const c = _cofreData[seccion];
     const totalCofre = c ? (c.m10||0)+(c.m5||0)+(c.m2||0)+(c.m1||0)+(c.m050||0) : 0;
     const totalConCofre = totalCaja + totalCofre;
@@ -2270,7 +2272,7 @@
     const resDiv = document.getElementById(`${p}-resultado`);
     if (resDiv) {
       resDiv.style.display = 'block';
-      document.getElementById(`${p}-stat-total`).textContent = totalCofre > 0
+      document.getElementById(`${p}-stat-total`).textContent = seccion==='ciber' && totalCofre>0
         ? `$${totalCaja.toFixed(2)} + $${totalCofre.toFixed(2)} cofre = $${totalConCofre.toFixed(2)}`
         : `$${totalConCofre.toFixed(2)}`;
       document.getElementById(`${p}-stat-ventas`).textContent = `$${ventasHoy.toFixed(2)}`;
@@ -2309,19 +2311,20 @@
     const d = _cofreData[sec];
     if (!d) { cont.innerHTML = '<div class="empty-state" style="padding:12px 0;font-size:.83rem">Sin datos</div>'; return; }
     const filas = [
-      { label:'M10',   amt: d.m10||0  },
-      { label:'M5',    amt: d.m5||0   },
-      { label:'M2',    amt: d.m2||0   },
-      { label:'M1',    amt: d.m1||0   },
-      { label:'M0.50', amt: d.m050||0 },
+      { label:'M10', qty: d.m10||0, val:10  },
+      { label:'M5',  qty: d.m5||0,  val:5   },
+      { label:'M2',  qty: d.m2||0,  val:2   },
+      { label:'M1',  qty: d.m1||0,  val:1   },
+      { label:'M0.50', qty: d.m050||0, val:0.5 },
     ];
-    const total = filas.reduce((a,f)=>a+f.amt, 0);
+    const total = filas.reduce((a,f)=>a+f.qty,0);
     cont.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
         ${filas.map(f=>`
           <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center">
             <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">${f.label}</div>
-            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem;color:var(--accent)">${f.amt>0?'$'+f.amt.toFixed(2):'-'}</div>
+            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem">${f.qty}</div>
+            <div style="font-size:.7rem;color:var(--accent)">${f.qty>0?'$'+f.qty.toFixed(2):'-'}</div>
           </div>`).join('')}
         <div style="background:rgba(120,80,255,.1);border:1px solid rgba(120,80,255,.4);border-radius:8px;padding:8px;text-align:center;grid-column:span 3">
           <div style="font-size:.65rem;color:#a78bfa;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Total cofre</div>
@@ -2400,9 +2403,9 @@
     const billeteIds = [`${p}-b1000`,`${p}-b500`,`${p}-b200`,`${p}-b100`,`${p}-b50`,`${p}-b20`];
     const sumM = monedaIds.reduce((a,id)  => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
     const sumB = billeteIds.reduce((a,id) => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
-    const c = _cofreData[seccion];
-    const totalCofre = c ? (c.m10||0)+(c.m5||0)+(c.m2||0)+(c.m1||0)+(c.m050||0) : 0;
-    const totalCaja = sumM + sumB + totalCofre;
+    const c2 = _cofreData[seccion];
+    const totalCofre2 = c2 ? (c2.m10||0)+(c2.m5||0)+(c2.m2||0)+(c2.m1||0)+(c2.m050||0) : 0;
+    const totalCaja = sumM + sumB + totalCofre2;
     const inicio = parseFloat(document.getElementById(`caja-${seccion}-inicio`)?.value)||0;
     if (!inicio && !totalCaja) { showToast('Llena el conteo primero','error'); return; }
     const hoy = new Date(); hoy.setHours(0,0,0,0);
