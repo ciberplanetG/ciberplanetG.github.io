@@ -927,6 +927,8 @@
       document.getElementById('user-email').textContent = user.email;
       loadProductos();
       loadVentas();
+      loadCiberServicios();
+      loadCiberTrabajos();
     } else {
       currentUser = null;
       scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
@@ -963,12 +965,17 @@
     if (tab === 'stock')     renderStock();
     if (tab === 'ventas')    renderVentas();
     if (tab === 'dashboard') renderDashboard();
+    if (tab === 'ciber')     renderCiber();
     // Conectar búsqueda de ventas cuando se activa la pestaña
     if (tab === 'ventas') {
       const vs = document.getElementById('ventas-search');
       if (vs && !vs._wired) { vs._wired = true; vs.addEventListener('input', renderVentas); }
       const vf = document.getElementById('ventas-filtro');
       if (vf && !vf._wired) { vf._wired = true; vf.addEventListener('change', renderVentas); }
+    }
+    if (tab === 'ciber') {
+      const cf = document.getElementById('ciber-filtro');
+      if (cf && !cf._wired) { cf._wired = true; cf.addEventListener('change', renderCiberTrabajos); }
     }
   };
 
@@ -1485,8 +1492,241 @@
     }
   };
 
-  // ── CONEXIÓN ──────────────────────────────────────────────────────
-  function setConnStatus(online) {
+  // ── CIBER ─────────────────────────────────────────────────────────
+  let ciberServicios = [];
+  let ciberTrabajos  = [];
+  let _ciberVista    = 'trabajos'; // 'trabajos' | 'servicios'
+
+  function loadCiberServicios() {
+    const q = query(collection(db, 'ciber_servicios'), orderBy('nombre'));
+    onSnapshot(q, snap => {
+      ciberServicios = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderCiberServicioSelect();
+      renderCiberListaServicios();
+    }, err => console.error('ciber_servicios:', err));
+  }
+
+  function loadCiberTrabajos() {
+    const q = query(collection(db, 'ciber_trabajos'), orderBy('fecha','desc'));
+    onSnapshot(q, snap => {
+      ciberTrabajos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderCiberTrabajos();
+      renderCiberResumenHoy();
+    }, err => console.error('ciber_trabajos:', err));
+  }
+
+  window.setCiberVista = (vista) => {
+    _ciberVista = vista;
+    document.getElementById('ciber-panel-trabajos').style.display  = vista==='trabajos'  ? 'block':'none';
+    document.getElementById('ciber-panel-servicios').style.display = vista==='servicios' ? 'block':'none';
+    document.getElementById('ciber-tab-trabajos').classList.toggle('ciber-tab-active',  vista==='trabajos');
+    document.getElementById('ciber-tab-servicios').classList.toggle('ciber-tab-active', vista==='servicios');
+    if (vista==='servicios') renderCiberListaServicios();
+    if (vista==='trabajos')  { renderCiberTrabajos(); renderCiberResumenHoy(); }
+  };
+
+  function renderCiber() {
+    renderCiberServicioSelect();
+    renderCiberTrabajos();
+    renderCiberResumenHoy();
+    renderCiberListaServicios();
+  }
+
+  // ── Catálogo de servicios ──────────────────────────────────────────
+  window.agregarServicioCiber = async () => {
+    const nombre = document.getElementById('cs-nombre').value.trim();
+    const cat    = document.getElementById('cs-cat').value.trim() || 'General';
+    const costo  = parseFloat(document.getElementById('cs-costo').value);
+    const precio = parseFloat(document.getElementById('cs-precio').value);
+    if (!nombre || isNaN(costo) || isNaN(precio)) { showToast('Llena nombre, costo y precio','error'); return; }
+    await addDoc(collection(db, 'ciber_servicios'), {
+      nombre, categoria: cat, costoUnitario: costo, precioVenta: precio,
+      ganancia: precio - costo, creadoEn: Timestamp.now()
+    });
+    ['cs-nombre','cs-cat','cs-costo','cs-precio'].forEach(id => document.getElementById(id).value='');
+    document.getElementById('cs-preview').textContent = '';
+    showToast('Servicio guardado ✓');
+  };
+
+  window.eliminarServicioCiber = async (id) => {
+    if (currentUser?.email !== OWNER_EMAIL) { showToast('Solo el dueño puede eliminar','error'); return; }
+    if (!confirm('¿Eliminar este servicio?')) return;
+    await deleteDoc(doc(db, 'ciber_servicios', id));
+    showToast('Servicio eliminado');
+  };
+
+  window.calcCiberPreview = () => {
+    const c = parseFloat(document.getElementById('cs-costo').value)||0;
+    const p = parseFloat(document.getElementById('cs-precio').value)||0;
+    const el = document.getElementById('cs-preview');
+    if (el) el.textContent = c&&p ? `Ganancia por servicio: $${(p-c).toFixed(2)}` : '';
+  };
+
+  function renderCiberServicioSelect() {
+    const sel = document.getElementById('ct-servicio');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Selecciona servicio —</option>' +
+      ciberServicios.map(s =>
+        `<option value="${s.id}">${s.nombre} — $${(s.precioVenta||0).toFixed(2)}</option>`
+      ).join('');
+  }
+
+  function renderCiberListaServicios() {
+    const cont = document.getElementById('ciber-servicios-list');
+    if (!cont) return;
+    if (!ciberServicios.length) { cont.innerHTML='<div class="empty-state">Sin servicios aún — agrégalos arriba</div>'; return; }
+    const cats = {};
+    ciberServicios.forEach(s => { const c=s.categoria||'General'; if(!cats[c]) cats[c]=[]; cats[c].push(s); });
+    const esOwner = currentUser?.email === OWNER_EMAIL;
+    cont.innerHTML = Object.entries(cats).map(([cat,items]) => `
+      <div class="ciber-cat-title">${cat}</div>
+      ${items.map(s=>`
+        <div class="ciber-serv-card">
+          <div class="ciber-serv-info">
+            <span class="ciber-serv-nombre">${s.nombre}</span>
+            <span class="ciber-serv-nums">
+              Costo: <b>$${(s.costoUnitario||0).toFixed(2)}</b> ·
+              Venta: <b>$${(s.precioVenta||0).toFixed(2)}</b> ·
+              <span style="color:var(--green)">Gan: $${(s.ganancia||0).toFixed(2)}</span>
+            </span>
+          </div>
+          ${esOwner?`<button class="btn-icon btn-danger" onclick="eliminarServicioCiber('${s.id}')">🗑</button>`:''}
+        </div>`).join('')}
+    `).join('');
+  }
+
+  // ── Registro de trabajos ───────────────────────────────────────────
+  window.onCiberServicioChange = () => {
+    const s   = ciberServicios.find(x=>x.id===document.getElementById('ct-servicio').value);
+    const pre = document.getElementById('ct-precio-preview');
+    if (s && pre) pre.textContent = `Precio: $${s.precioVenta.toFixed(2)} · Costo: $${s.costoUnitario.toFixed(2)} · Ganancia/u: $${s.ganancia.toFixed(2)}`;
+    else if (pre) pre.textContent = '';
+  };
+
+  window.registrarTrabajoCiber = async () => {
+    const sid     = document.getElementById('ct-servicio').value;
+    const cant    = parseInt(document.getElementById('ct-cantidad').value)||1;
+    const tipo    = document.getElementById('ct-tipo').value;
+    const cliente = document.getElementById('ct-cliente').value.trim();
+    const nota    = document.getElementById('ct-nota').value.trim();
+    if (!sid) { showToast('Selecciona un servicio','error'); return; }
+    const s = ciberServicios.find(x=>x.id===sid);
+    if (!s) return;
+    await addDoc(collection(db,'ciber_trabajos'), {
+      servicioId: sid, servicioNombre: s.nombre, categoria: s.categoria||'General',
+      cantidad: cant, precioUnitario: s.precioVenta, costoUnitario: s.costoUnitario,
+      total: s.precioVenta*cant, gananciaTotal: s.ganancia*cant,
+      costoTotal: s.costoUnitario*cant, tipo, cliente, nota,
+      fecha: Timestamp.now(), vendedor: currentUser.email
+    });
+    document.getElementById('ct-servicio').value  = '';
+    document.getElementById('ct-cantidad').value  = '1';
+    document.getElementById('ct-cliente').value   = '';
+    document.getElementById('ct-nota').value      = '';
+    document.getElementById('ct-tipo').value      = 'cobrado';
+    document.getElementById('ct-precio-preview').textContent = '';
+    showToast(tipo==='fiado'?`Fiado: ${cliente||'cliente'} ✓`:'Trabajo registrado ✓');
+  };
+
+  window.eliminarTrabajoCiber = async (id) => {
+    if (currentUser?.email !== OWNER_EMAIL) { showToast('Solo el dueño puede eliminar','error'); return; }
+    if (!confirm('¿Eliminar este trabajo?')) return;
+    await deleteDoc(doc(db,'ciber_trabajos',id));
+    showToast('Trabajo eliminado');
+  };
+
+  // ── Renders ciber ──────────────────────────────────────────────────
+  function renderCiberResumenHoy() {
+    const cont = document.getElementById('ciber-resumen-hoy');
+    if (!cont) return;
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const th  = ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy);
+    const tc  = th.filter(t=>t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    const tf  = th.filter(t=>t.tipo==='fiado').reduce((a,t)=>a+(t.total||0),0);
+    const tg  = th.reduce((a,t)=>a+(t.gananciaTotal||0),0);
+    const nc  = th.filter(t=>t.tipo==='cobrado').length;
+    const nf  = th.filter(t=>t.tipo==='fiado').length;
+    cont.innerHTML = `
+      <div class="dash-grid" style="margin-bottom:0">
+        <div class="dash-card accent">
+          <div class="dash-label">💵 Cobrado hoy</div>
+          <div class="dash-value">$${tc.toFixed(2)}</div>
+          <div class="dash-sub">${nc} trabajos</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-label">📈 Ganancia hoy</div>
+          <div class="dash-value green">$${tg.toFixed(2)}</div>
+          <div class="dash-sub">${th.length} registros</div>
+        </div>
+        <div class="dash-card" style="grid-column:1/-1">
+          <div class="dash-label">🤝 Fiados pendientes hoy</div>
+          <div class="dash-value orange">$${tf.toFixed(2)}</div>
+          <div class="dash-sub">${nf} sin cobrar</div>
+        </div>
+      </div>`;
+  }
+
+  function renderCiberTrabajos() {
+    const cont   = document.getElementById('ciber-trabajos-list');
+    if (!cont) return;
+    const filtro = document.getElementById('ciber-filtro')?.value || 'hoy';
+    const hoy    = new Date(); hoy.setHours(0,0,0,0);
+    let filtered = ciberTrabajos;
+    if (filtro==='hoy')    filtered = ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy);
+    if (filtro==='semana') { const s=new Date(hoy);s.setDate(s.getDate()-7);filtered=ciberTrabajos.filter(t=>t.fecha?.toDate()>=s); }
+    if (filtro==='mes')    { const m=new Date(hoy);m.setDate(m.getDate()-30);filtered=ciberTrabajos.filter(t=>t.fecha?.toDate()>=m); }
+    if (!filtered.length)  { cont.innerHTML='<div class="empty-state">Sin trabajos en este período</div>'; return; }
+
+    const totalC=filtered.filter(t=>t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    const totalF=filtered.filter(t=>t.tipo==='fiado').reduce((a,t)=>a+(t.total||0),0);
+    const totalG=filtered.reduce((a,t)=>a+(t.gananciaTotal||0),0);
+    const nc=filtered.filter(t=>t.tipo==='cobrado').length;
+    const nf=filtered.filter(t=>t.tipo==='fiado').length;
+    const esOwner = currentUser?.email===OWNER_EMAIL;
+
+    cont.innerHTML = `
+      <div class="periodo-resumen">
+        <div class="periodo-item">
+          <span class="periodo-label">💵 Cobrado</span>
+          <span class="periodo-val green">$${totalC.toFixed(2)}</span>
+          <span class="periodo-sub">${nc} trabajos</span>
+        </div>
+        <div class="periodo-item">
+          <span class="periodo-label">🤝 Fiado</span>
+          <span class="periodo-val orange">$${totalF.toFixed(2)}</span>
+          <span class="periodo-sub">${nf} registros</span>
+        </div>
+        <div class="periodo-item">
+          <span class="periodo-label">📈 Ganancia</span>
+          <span class="periodo-val green">$${totalG.toFixed(2)}</span>
+          <span class="periodo-sub">${filtered.length} total</span>
+        </div>
+      </div>` +
+    filtered.map(t => {
+      const f  = t.fecha?.toDate();
+      const fs = f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
+      const btnDel = esOwner?`<button class="btn-del-venta" onclick="eliminarTrabajoCiber('${t.id}')">🗑</button>`:'';
+      return `<div class="venta-card ${t.tipo==='fiado'?'venta-debe':''}">
+        <div class="venta-header">
+          <span class="venta-nombre">${t.servicioNombre}</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="venta-badge ${t.tipo==='fiado'?'badge-orange':'badge-blue'}">${t.tipo==='fiado'?'🤝 FIADO':'✅ COBRADO'}</span>
+            ${btnDel}
+          </div>
+        </div>
+        <div class="venta-info">
+          <span>${t.cantidad} × $${(t.precioUnitario||0).toFixed(2)}</span>
+          <span>Total: <b>$${(t.total||0).toFixed(2)}</b></span>
+          <span class="ganancia">Ganancia: $${(t.gananciaTotal||0).toFixed(2)}</span>
+        </div>
+        ${t.cliente?`<div class="venta-cliente">👤 ${t.cliente}</div>`:''}
+        ${t.nota?`<div class="venta-cliente" style="color:var(--muted)">📝 ${t.nota}</div>`:''}
+        <div class="venta-footer">${fs} · ${t.vendedor}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── CONEXIÓN ──────────────────────────────────────────────────────  function setConnStatus(online) {
     const dot = document.getElementById('conn-dot');
     if (!dot) return;
     dot.title   = online ? 'Sincronizado con Firebase' : 'Sin conexión / Error de permisos';
@@ -1675,6 +1915,16 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .top-row:last-child{border-bottom:none}
 .btn-excel{width:100%;background:rgba(61,220,132,.1);border:1px solid var(--green);color:var(--green);font-family:'Syne',sans-serif;font-weight:700;padding:13px;border-radius:10px;cursor:pointer;font-size:.91rem;transition:background .2s}
 .btn-excel:hover{background:rgba(61,220,132,.2)}
+
+/* CIBER */
+.ciber-tabs{display:flex;gap:8px;margin-bottom:16px}
+.ciber-tab{flex:1;padding:11px 8px;border-radius:10px;cursor:pointer;font-family:'Syne',sans-serif;font-weight:700;font-size:.85rem;border:1px solid var(--border);background:var(--surface2);color:var(--muted);transition:all .2s}
+.ciber-tab-active{background:rgba(245,200,66,.15);border-color:var(--accent);color:var(--accent)}
+.ciber-cat-title{font-family:'Syne',sans-serif;font-weight:700;font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin:14px 0 7px;padding-left:2px}
+.ciber-serv-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.ciber-serv-info{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}
+.ciber-serv-nombre{font-family:'Syne',sans-serif;font-weight:700;font-size:.92rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ciber-serv-nums{font-size:.76rem;color:var(--muted)}
 
 /* MISC */
 .empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:.87rem}
@@ -1999,6 +2249,104 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <div id="ventas-list"><div class="empty-state">Cargando...</div></div>
     </div>
 
+    <!-- ══════════════════════════════════════════
+         CIBER TAB
+    ══════════════════════════════════════════ -->
+    <div class="tab-content" id="tab-ciber">
+      <div class="page-title">🖥️ CiberPlanet — Ciber</div>
+
+      <!-- Tabs internos: Trabajos / Servicios -->
+      <div class="ciber-tabs">
+        <button id="ciber-tab-trabajos"  class="ciber-tab ciber-tab-active" onclick="setCiberVista('trabajos')">💼 Trabajos</button>
+        <button id="ciber-tab-servicios" class="ciber-tab" onclick="setCiberVista('servicios')">⚙️ Servicios</button>
+      </div>
+
+      <!-- ── PANEL TRABAJOS ───────────────────── -->
+      <div id="ciber-panel-trabajos">
+
+        <!-- Resumen del día -->
+        <div id="ciber-resumen-hoy" style="margin-bottom:14px">
+          <div class="empty-state">Cargando...</div>
+        </div>
+
+        <!-- Formulario registro rápido -->
+        <div class="card">
+          <div class="card-title">➕ Registrar trabajo</div>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Servicio *</label>
+              <select id="ct-servicio" onchange="onCiberServicioChange()">
+                <option value="">— Selecciona servicio —</option>
+              </select>
+              <div class="preview-text" id="ct-precio-preview" style="margin-top:5px"></div>
+            </div>
+            <div class="form-group">
+              <label>Cantidad</label>
+              <input type="number" id="ct-cantidad" value="1" min="1" inputmode="numeric"/>
+            </div>
+            <div class="form-group">
+              <label>Tipo</label>
+              <select id="ct-tipo">
+                <option value="cobrado">✅ Cobrado</option>
+                <option value="fiado">🤝 Fiado</option>
+              </select>
+            </div>
+            <div class="form-group form-full">
+              <label>Cliente (opcional)</label>
+              <input type="text" id="ct-cliente" placeholder="Ej: María López"/>
+            </div>
+            <div class="form-group form-full">
+              <label>Nota / descripción (opcional)</label>
+              <input type="text" id="ct-nota" placeholder="Ej: Recibo de luz — 3 páginas color"/>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="registrarTrabajoCiber()">Registrar trabajo</button>
+        </div>
+
+        <!-- Historial de trabajos -->
+        <div class="page-title" style="margin-top:18px">Historial</div>
+        <select class="filtro-select" id="ciber-filtro">
+          <option value="hoy">📅 Hoy</option>
+          <option value="semana">📆 Últimos 7 días</option>
+          <option value="mes">🗓 Últimos 30 días</option>
+          <option value="todo">📋 Todo el historial</option>
+        </select>
+        <div id="ciber-trabajos-list"><div class="empty-state">Cargando...</div></div>
+      </div>
+
+      <!-- ── PANEL SERVICIOS ──────────────────── -->
+      <div id="ciber-panel-servicios" style="display:none">
+        <div class="card">
+          <div class="card-title">➕ Nuevo servicio</div>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Nombre del servicio *</label>
+              <input type="text" id="cs-nombre" placeholder="Ej: Impresión BN hoja carta"/>
+            </div>
+            <div class="form-group form-full">
+              <label>Categoría</label>
+              <input type="text" id="cs-cat" placeholder="Ej: Impresión, Trámites, Copias, Internet…"/>
+            </div>
+            <div class="form-group">
+              <label>Costo unitario ($) *</label>
+              <input type="number" id="cs-costo" placeholder="2.00" step="0.01" inputmode="decimal" oninput="calcCiberPreview()"/>
+            </div>
+            <div class="form-group">
+              <label>Precio de venta ($) *</label>
+              <input type="number" id="cs-precio" placeholder="10.00" step="0.01" inputmode="decimal" oninput="calcCiberPreview()"/>
+            </div>
+            <div class="form-group form-full">
+              <div class="preview-text" id="cs-preview"></div>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="agregarServicioCiber()">+ Guardar servicio</button>
+        </div>
+
+        <div class="page-title" style="margin-top:18px">Catálogo de servicios</div>
+        <div id="ciber-servicios-list"><div class="empty-state">Sin servicios aún — agrégalos arriba</div></div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 
   <nav class="bottom-nav">
@@ -2012,7 +2360,10 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <span class="icon">🏪</span>Stock
     </button>
     <button class="nav-btn" data-tab="ventas" onclick="showTab('ventas')">
-      <span class="icon">💰</span>Ventas
+      <span class="icon">💰</span>Dulces
+    </button>
+    <button class="nav-btn" data-tab="ciber" onclick="showTab('ciber')">
+      <span class="icon">🖥️</span>Ciber
     </button>
   </nav>
 </div>
