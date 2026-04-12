@@ -933,6 +933,7 @@
       loadCiberTrabajos();
       loadReparaciones();
       loadCajas();
+      loadCofre();
       // Inicializar ticket con una línea vacía
       setTimeout(() => { _ticketLineas = []; agregarLineaTicket(); }, 400);
       // Ocultar pestaña Servicios para alberto
@@ -1220,7 +1221,7 @@
     showToast(tipo==='debe'?`Debe registrado (${cliente||'cliente'}) ✓`:'Venta registrada ✓');
   };
 
-  function renderVentas() {
+  window.renderVentas = function renderVentas() {
     const cont   = document.getElementById('ventas-list');
     if (!cont) return;
     const filtro   = document.getElementById('ventas-filtro')?.value || 'hoy';
@@ -1972,7 +1973,7 @@
       </div>`;
   }
 
-  function renderCiberTrabajos() {
+  window.renderCiberTrabajos = function renderCiberTrabajos() {
     const cont   = document.getElementById('ciber-trabajos-list');
     if (!cont) return;
     const filtro = document.getElementById('ciber-filtro')?.value || 'hoy';
@@ -2210,64 +2211,202 @@
 
   setTimeout(()=>{
     document.getElementById('stock-search')?.addEventListener('input', renderStock);
-    document.getElementById('ventas-filtro')?.addEventListener('change', renderVentas);
+    // Filtros ventas
+    document.getElementById('ventas-filtro')?.addEventListener('change', e => {
+      document.getElementById('ventas-custom-fechas').style.display = e.target.value==='custom'?'flex':'none';
+      window.renderVentas();
+    });
+    document.getElementById('ventas-fecha-desde')?.addEventListener('change', () => window.renderVentas());
+    document.getElementById('ventas-fecha-hasta')?.addEventListener('change', () => window.renderVentas());
+    // Filtros ciber
+    document.getElementById('ciber-filtro')?.addEventListener('change', e => {
+      document.getElementById('ciber-custom-fechas').style.display = e.target.value==='custom'?'flex':'none';
+      window.renderCiberTrabajos();
+    });
+    document.getElementById('ciber-fecha-desde')?.addEventListener('change', () => window.renderCiberTrabajos());
+    document.getElementById('ciber-fecha-hasta')?.addEventListener('change', () => window.renderCiberTrabajos());
   }, 600);
 
   // ── CONTEO DE CAJA ────────────────────────────────────────────────
   window.calcConteo = (seccion) => {
     const p = seccion === 'dulces' ? 'cd' : 'cc';
     const monedas = [
-      { id: `${p}-m10`,   val: 10   },
-      { id: `${p}-m5`,    val: 5    },
-      { id: `${p}-m2`,    val: 2    },
-      { id: `${p}-m1`,    val: 1    },
-      { id: `${p}-m050`,  val: 0.5  },
+      { id: `${p}-m10`,   val: 10,   sub: `${p}-sub-m10`   },
+      { id: `${p}-m5`,    val: 5,    sub: `${p}-sub-m5`    },
+      { id: `${p}-m2`,    val: 2,    sub: `${p}-sub-m2`    },
+      { id: `${p}-m1`,    val: 1,    sub: `${p}-sub-m1`    },
+      { id: `${p}-m050`,  val: 0.5,  sub: `${p}-sub-m050`  },
     ];
     const billetes = [
-      { id: `${p}-b1000`, val: 1000 },
-      { id: `${p}-b500`,  val: 500  },
-      { id: `${p}-b200`,  val: 200  },
-      { id: `${p}-b100`,  val: 100  },
-      { id: `${p}-b50`,   val: 50   },
-      { id: `${p}-b20`,   val: 20   },
+      { id: `${p}-b1000`, val: 1000, sub: `${p}-sub-b1000` },
+      { id: `${p}-b500`,  val: 500,  sub: `${p}-sub-b500`  },
+      { id: `${p}-b200`,  val: 200,  sub: `${p}-sub-b200`  },
+      { id: `${p}-b100`,  val: 100,  sub: `${p}-sub-b100`  },
+      { id: `${p}-b50`,   val: 50,   sub: `${p}-sub-b50`   },
+      { id: `${p}-b20`,   val: 20,   sub: `${p}-sub-b20`   },
     ];
-    const sumM = monedas.reduce((a,m) => a + (parseFloat(document.getElementById(m.id)?.value)||0) * m.val, 0);
-    const sumB = billetes.reduce((a,b) => a + (parseFloat(document.getElementById(b.id)?.value)||0) * b.val, 0);
+    let sumM = 0, sumB = 0;
+    monedas.forEach(m => {
+      const qty = parseFloat(document.getElementById(m.id)?.value)||0;
+      const subtotal = qty * m.val;
+      sumM += subtotal;
+      const subEl = document.getElementById(m.sub);
+      if (subEl) subEl.textContent = subtotal > 0 ? `$${subtotal % 1 === 0 ? subtotal : subtotal.toFixed(2)}` : '';
+    });
+    billetes.forEach(b => {
+      const qty = parseFloat(document.getElementById(b.id)?.value)||0;
+      const subtotal = qty * b.val;
+      sumB += subtotal;
+      const subEl = document.getElementById(b.sub);
+      if (subEl) subEl.textContent = subtotal > 0 ? `$${subtotal}` : '';
+    });
     const totalCaja = sumM + sumB;
     document.getElementById(`${p}-total-monedas`).textContent = `Total monedas: $${sumM.toFixed(2)}`;
     document.getElementById(`${p}-total-billetes`).textContent = `Total billetes: $${sumB.toFixed(2)}`;
 
-    // Ventas del día
+    // Sumar cofre al total de ciber
+    let totalCofre = 0;
+    if (seccion === 'ciber' && _cofreData.ciber) {
+      const c = _cofreData.ciber;
+      totalCofre = (c.m10||0)*10 + (c.m5||0)*5 + (c.m2||0)*2 + (c.m1||0)*1 + (c.m050||0)*0.5;
+    }
+    const totalConCofre = totalCaja + totalCofre;
     const hoy = new Date(); hoy.setHours(0,0,0,0);
     const ventasHoy = seccion === 'dulces'
       ? ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0)
       : ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
     const inicio = parseFloat(document.getElementById(`caja-${seccion}-inicio`)?.value)||0;
     const esperado = inicio + ventasHoy;
-    const diferencia = totalCaja - esperado;
+    const diferencia = totalConCofre - esperado;
 
     const resDiv = document.getElementById(`${p}-resultado`);
     if (resDiv) {
       resDiv.style.display = 'block';
-      document.getElementById(`${p}-stat-total`).textContent = `$${totalCaja.toFixed(2)}`;
+      document.getElementById(`${p}-stat-total`).textContent = seccion==='ciber' && totalCofre>0
+        ? `$${totalCaja.toFixed(2)} + $${totalCofre.toFixed(2)} cofre = $${totalConCofre.toFixed(2)}`
+        : `$${totalConCofre.toFixed(2)}`;
       document.getElementById(`${p}-stat-ventas`).textContent = `$${ventasHoy.toFixed(2)}`;
       document.getElementById(`${p}-stat-inicio`).textContent = `$${inicio.toFixed(2)}`;
       document.getElementById(`${p}-stat-esperado`).textContent = `$${esperado.toFixed(2)}`;
       const difEl = document.getElementById(`${p}-diferencia`);
       if (Math.abs(diferencia) < 0.01) {
-        difEl.style.background = 'rgba(61,220,132,.15)';
-        difEl.style.color = 'var(--green)';
+        difEl.style.background = 'rgba(61,220,132,.15)'; difEl.style.color = 'var(--green)';
         difEl.textContent = '✅ Caja cuadrada perfectamente';
       } else if (diferencia < 0) {
-        difEl.style.background = 'rgba(255,77,109,.15)';
-        difEl.style.color = 'var(--red)';
+        difEl.style.background = 'rgba(255,77,109,.15)'; difEl.style.color = 'var(--red)';
         difEl.textContent = `⚠️ Falta $${Math.abs(diferencia).toFixed(2)}`;
       } else {
-        difEl.style.background = 'rgba(255,159,67,.15)';
-        difEl.style.color = 'var(--orange)';
+        difEl.style.background = 'rgba(255,159,67,.15)'; difEl.style.color = 'var(--orange)';
         difEl.textContent = `ℹ️ Sobran $${diferencia.toFixed(2)}`;
       }
     }
+  };
+
+  // ── COFRE DE MONEDAS ──────────────────────────────────────────────
+  let _cofreData = { dulces: null, ciber: null };
+
+  async function loadCofre() {
+    for (const sec of ['dulces','ciber']) {
+      try {
+        const snap = await getDoc(doc(db, 'cofre', sec));
+        _cofreData[sec] = snap.exists() ? snap.data() : { m10:0, m5:0, m2:0, m1:0, m050:0 };
+      } catch(e) { _cofreData[sec] = { m10:0, m5:0, m2:0, m1:0, m050:0 }; }
+      renderCofreVista(sec);
+    }
+  }
+
+  function renderCofreVista(sec) {
+    const cont = document.getElementById(`cofre-${sec}-vista`);
+    if (!cont) return;
+    const d = _cofreData[sec];
+    if (!d) { cont.innerHTML = '<div class="empty-state" style="padding:12px 0;font-size:.83rem">Sin datos</div>'; return; }
+    const filas = [
+      { label:'M10', qty: d.m10||0, val:10  },
+      { label:'M5',  qty: d.m5||0,  val:5   },
+      { label:'M2',  qty: d.m2||0,  val:2   },
+      { label:'M1',  qty: d.m1||0,  val:1   },
+      { label:'M0.50', qty: d.m050||0, val:0.5 },
+    ];
+    const total = filas.reduce((a,f)=>a+f.qty*f.val,0);
+    cont.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
+        ${filas.map(f=>`
+          <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center">
+            <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">${f.label}</div>
+            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem">${f.qty}</div>
+            <div style="font-size:.7rem;color:var(--accent)">${f.qty>0?'$'+(f.qty*f.val).toFixed(f.val<1?2:0):'-'}</div>
+          </div>`).join('')}
+        <div style="background:rgba(120,80,255,.1);border:1px solid rgba(120,80,255,.4);border-radius:8px;padding:8px;text-align:center;grid-column:span 3">
+          <div style="font-size:.65rem;color:#a78bfa;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Total cofre</div>
+          <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem;color:#a78bfa">$${total.toFixed(2)}</div>
+        </div>
+      </div>`;
+  }
+
+  window.abrirCofre = (sec) => {
+    // Pedir PIN primero
+    document.getElementById('cofre-pin-seccion').value = sec;
+    document.getElementById('cofre-pin-input').value = '';
+    document.getElementById('cofre-pin-error').textContent = '';
+    document.getElementById('cofre-pin-modal').style.display = 'flex';
+    setTimeout(()=>document.getElementById('cofre-pin-input').focus(), 100);
+  };
+
+  window.cerrarCofreModal = () => {
+    document.getElementById('cofre-pin-modal').style.display = 'none';
+    document.getElementById('cofre-edit-modal').style.display = 'none';
+  };
+
+  window.confirmarCofrePin = () => {
+    const pin = document.getElementById('cofre-pin-input').value.trim();
+    if (pin !== DELETE_PIN) {
+      document.getElementById('cofre-pin-error').textContent = '❌ PIN incorrecto';
+      document.getElementById('cofre-pin-input').value = '';
+      document.getElementById('cofre-pin-input').focus();
+      return;
+    }
+    const sec = document.getElementById('cofre-pin-seccion').value;
+    document.getElementById('cofre-pin-modal').style.display = 'none';
+    abrirCofreEditor(sec);
+  };
+
+  function abrirCofreEditor(sec) {
+    const d = _cofreData[sec] || {};
+    document.getElementById('cofre-edit-seccion').value = sec;
+    document.getElementById('cofre-edit-titulo').textContent = sec === 'dulces' ? '🏺 Cofre — Dulces' : '🏺 Cofre — Ciber';
+    ['m10','m5','m2','m1','m050'].forEach(k => {
+      const el = document.getElementById(`cofre-edit-${k}`);
+      if (el) el.value = d[k]||0;
+    });
+    calcCofreEditTotal();
+    document.getElementById('cofre-edit-modal').style.display = 'flex';
+  }
+
+  window.calcCofreEditTotal = () => {
+    const vals = { m10:10, m5:5, m2:2, m1:1, m050:0.5 };
+    const total = Object.entries(vals).reduce((a,[k,v])=>{
+      return a + (parseFloat(document.getElementById(`cofre-edit-${k}`)?.value)||0)*v;
+    },0);
+    const el = document.getElementById('cofre-edit-total');
+    if (el) el.textContent = `$${total.toFixed(2)}`;
+  };
+
+  window.guardarCofre = async () => {
+    const sec = document.getElementById('cofre-edit-seccion').value;
+    const data = {
+      m10:  parseFloat(document.getElementById('cofre-edit-m10')?.value)||0,
+      m5:   parseFloat(document.getElementById('cofre-edit-m5')?.value)||0,
+      m2:   parseFloat(document.getElementById('cofre-edit-m2')?.value)||0,
+      m1:   parseFloat(document.getElementById('cofre-edit-m1')?.value)||0,
+      m050: parseFloat(document.getElementById('cofre-edit-m050')?.value)||0,
+      actualizadoPor: currentUser.email,
+      fecha: Timestamp.now()
+    };
+    await setDoc(doc(db,'cofre',sec), data);
+    _cofreData[sec] = data;
+    renderCofreVista(sec);
+    cerrarCofreModal();
+    showToast('Cofre actualizado ✓');
   };
 
   window.registrarCierreCaja = async (seccion) => {
@@ -2501,8 +2640,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .ct-ganancia-line{font-size:.75rem;color:var(--green);margin-top:5px;text-align:right}
 
 /* MISC */
-.conteo-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px}
-.conteo-row span{font-size:.85rem;color:var(--text);min-width:40px}
+.conteo-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px}
+.conteo-row span:first-child{font-size:.82rem;color:var(--text);min-width:52px}
+.conteo-sub{font-size:.75rem;color:var(--accent);font-weight:700;min-width:36px;text-align:right;flex-shrink:0}
 .conteo-inp{width:70px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text);font-size:.9rem;text-align:right;outline:none;font-family:'DM Sans',sans-serif}
 .conteo-inp:focus{border-color:var(--accent)}
 .conteo-total{font-size:.78rem;color:var(--accent);font-weight:700;margin-top:6px;text-align:right;border-top:1px solid var(--border);padding-top:6px}
@@ -2836,7 +2976,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <button class="btn-primary" onclick="registrarVenta()">Registrar</button>
       </div>
       <div class="page-title" style="margin-top:18px">Historial</div>
-      <select class="filtro-select" id="ventas-filtro" onchange="(function(){const v=this.value;document.getElementById('ventas-custom-fechas').style.display=v==='custom'?'flex':'none';renderVentas();}).call(this)">
+      <select class="filtro-select" id="ventas-filtro">
         <option value="hoy">📅 Hoy</option>
         <option value="semana">📆 Últimos 7 días</option>
         <option value="mes">🗓 Últimos 30 días</option>
@@ -2846,11 +2986,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <div id="ventas-custom-fechas" style="display:none;gap:8px;margin-bottom:10px;flex-wrap:wrap">
         <div style="flex:1;min-width:130px">
           <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Desde</label>
-          <input type="date" id="ventas-fecha-desde" onchange="renderVentas()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          <input type="date" id="ventas-fecha-desde" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
         </div>
         <div style="flex:1;min-width:130px">
           <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
-          <input type="date" id="ventas-fecha-hasta" onchange="renderVentas()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          <input type="date" id="ventas-fecha-hasta" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
         </div>
       </div>
       <input class="search-bar" id="ventas-search" placeholder="🔍 Buscar por producto o cliente..." style="margin-top:8px"/>
@@ -2908,7 +3048,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 
         <!-- Historial de trabajos -->
         <div class="page-title" style="margin-top:18px">Historial</div>
-        <select class="filtro-select" id="ciber-filtro" onchange="(function(){const v=this.value;document.getElementById('ciber-custom-fechas').style.display=v==='custom'?'flex':'none';renderCiberTrabajos();}).call(this)">
+        <select class="filtro-select" id="ciber-filtro">
           <option value="hoy">📅 Hoy</option>
           <option value="semana">📆 Últimos 7 días</option>
           <option value="mes">🗓 Últimos 30 días</option>
@@ -2918,11 +3058,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div id="ciber-custom-fechas" style="display:none;gap:8px;margin-bottom:10px;flex-wrap:wrap">
           <div style="flex:1;min-width:130px">
             <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Desde</label>
-            <input type="date" id="ciber-fecha-desde" onchange="renderCiberTrabajos()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+            <input type="date" id="ciber-fecha-desde" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
           </div>
           <div style="flex:1;min-width:130px">
             <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
-            <input type="date" id="ciber-fecha-hasta" onchange="renderCiberTrabajos()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+            <input type="date" id="ciber-fecha-hasta" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
           </div>
         </div>
         <div id="ciber-trabajos-list"><div class="empty-state">Cargando...</div></div>
@@ -2998,23 +3138,23 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <!-- Monedas -->
           <div>
-            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas</div>
-            <div class="conteo-row"><span>$10</span><input type="number" id="cd-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$5</span><input type="number" id="cd-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$2</span><input type="number" id="cd-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$1</span><input type="number" id="cd-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$0.50</span><input type="number" id="cd-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas (cuántas piezas)</div>
+            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cd-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m10">$0</span></div>
+            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cd-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m5">$0</span></div>
+            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cd-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m2">$0</span></div>
+            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cd-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m1">$0</span></div>
+            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cd-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m050">$0</span></div>
             <div class="conteo-total" id="cd-total-monedas">Total monedas: $0.00</div>
           </div>
           <!-- Billetes -->
           <div>
-            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes</div>
-            <div class="conteo-row"><span>$1000</span><input type="number" id="cd-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$500</span><input type="number" id="cd-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$200</span><input type="number" id="cd-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$100</span><input type="number" id="cd-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$50</span><input type="number" id="cd-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
-            <div class="conteo-row"><span>$20</span><input type="number" id="cd-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes (cuántos piezas)</div>
+            <div class="conteo-row"><span>$1000</span><input type="number" id="cd-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b1000">$0</span></div>
+            <div class="conteo-row"><span>$500</span><input type="number" id="cd-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b500">$0</span></div>
+            <div class="conteo-row"><span>$200</span><input type="number" id="cd-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b200">$0</span></div>
+            <div class="conteo-row"><span>$100</span><input type="number" id="cd-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b100">$0</span></div>
+            <div class="conteo-row"><span>$50</span><input type="number" id="cd-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b50">$0</span></div>
+            <div class="conteo-row"><span>$20</span><input type="number" id="cd-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b20">$0</span></div>
             <div class="conteo-total" id="cd-total-billetes">Total billetes: $0.00</div>
           </div>
         </div>
@@ -3037,6 +3177,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         </div>
         <button class="btn-primary" style="margin-top:14px;background:var(--surface2);border:1px solid var(--accent);color:var(--accent)" onclick="calcConteo('dulces')">🧮 Calcular conteo</button>
         <button class="btn-primary" onclick="registrarCierreCaja('dulces')">💾 Guardar cierre de caja</button>
+      </div>
+
+      <!-- COFRE DE MONEDAS DULCES -->
+      <div class="card" style="margin-top:10px;border-color:rgba(120,80,255,.4)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div class="card-title" style="margin-bottom:0;color:#a78bfa">🏺 Cofre de monedas — Dulces</div>
+          <button id="cofre-dulces-btn-editar" class="btn-icon" style="font-size:.75rem;padding:5px 12px" onclick="abrirCofre('dulces')">🔐 Editar</button>
+        </div>
+        <div id="cofre-dulces-vista"><div class="empty-state" style="padding:16px 0;font-size:.83rem">Cargando cofre...</div></div>
       </div>
 
       <!-- Movimiento extra -->
@@ -3069,22 +3218,22 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div class="card-title">🧮 Conteo de caja — Ciber</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
-            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas</div>
-            <div class="conteo-row"><span>$10</span><input type="number" id="cc-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$5</span><input type="number" id="cc-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$2</span><input type="number" id="cc-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$1</span><input type="number" id="cc-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$0.50</span><input type="number" id="cc-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas (cuántas piezas)</div>
+            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cc-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m10">$0</span></div>
+            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cc-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m5">$0</span></div>
+            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cc-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m2">$0</span></div>
+            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cc-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m1">$0</span></div>
+            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cc-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m050">$0</span></div>
             <div class="conteo-total" id="cc-total-monedas">Total monedas: $0.00</div>
           </div>
           <div>
-            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes</div>
-            <div class="conteo-row"><span>$1000</span><input type="number" id="cc-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$500</span><input type="number" id="cc-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$200</span><input type="number" id="cc-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$100</span><input type="number" id="cc-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$50</span><input type="number" id="cc-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
-            <div class="conteo-row"><span>$20</span><input type="number" id="cc-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes (cuántos piezas)</div>
+            <div class="conteo-row"><span>$1000</span><input type="number" id="cc-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b1000">$0</span></div>
+            <div class="conteo-row"><span>$500</span><input type="number" id="cc-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b500">$0</span></div>
+            <div class="conteo-row"><span>$200</span><input type="number" id="cc-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b200">$0</span></div>
+            <div class="conteo-row"><span>$100</span><input type="number" id="cc-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b100">$0</span></div>
+            <div class="conteo-row"><span>$50</span><input type="number" id="cc-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b50">$0</span></div>
+            <div class="conteo-row"><span>$20</span><input type="number" id="cc-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b20">$0</span></div>
             <div class="conteo-total" id="cc-total-billetes">Total billetes: $0.00</div>
           </div>
         </div>
@@ -3105,6 +3254,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         </div>
         <button class="btn-primary" style="margin-top:14px;background:var(--surface2);border:1px solid var(--accent);color:var(--accent)" onclick="calcConteo('ciber')">🧮 Calcular conteo</button>
         <button class="btn-primary" onclick="registrarCierreCaja('ciber')">💾 Guardar cierre de caja</button>
+      </div>
+
+      <!-- COFRE DE MONEDAS CIBER -->
+      <div class="card" style="margin-top:10px;border-color:rgba(120,80,255,.4)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div class="card-title" style="margin-bottom:0;color:#a78bfa">🏺 Cofre de monedas — Ciber</div>
+          <button id="cofre-ciber-btn-editar" class="btn-icon" style="font-size:.75rem;padding:5px 12px" onclick="abrirCofre('ciber')">🔐 Editar</button>
+        </div>
+        <div id="cofre-ciber-vista"><div class="empty-state" style="padding:16px 0;font-size:.83rem">Cargando cofre...</div></div>
       </div>
 
       <div class="card" style="margin-top:10px">
@@ -3207,5 +3365,65 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 </div>
 
 <div id="toast" class="toast"></div>
+
+<!-- COFRE PIN MODAL -->
+<div id="cofre-pin-modal" class="pin-modal-overlay" onclick="if(event.target===this)cerrarCofreModal()" style="display:none;align-items:center;justify-content:center">
+  <div class="pin-modal">
+    <div class="pin-modal-title">🔐 Acceso al Cofre</div>
+    <div class="pin-modal-sub">Solo el dueño puede editar el cofre de monedas</div>
+    <input type="hidden" id="cofre-pin-seccion"/>
+    <input class="pin-input" id="cofre-pin-input" type="password" inputmode="numeric" maxlength="8" placeholder="••••••••"
+      onkeydown="if(event.key==='Enter') confirmarCofrePin()"/>
+    <div class="pin-error" id="cofre-pin-error"></div>
+    <div class="pin-btn-row">
+      <button class="pin-btn-cancel" onclick="cerrarCofreModal()">Cancelar</button>
+      <button class="pin-btn-confirm" onclick="confirmarCofrePin()">Entrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- COFRE EDITOR MODAL -->
+<div id="cofre-edit-modal" class="pin-modal-overlay" onclick="if(event.target===this)cerrarCofreModal()" style="display:none;align-items:center;justify-content:center">
+  <div class="pin-modal" style="max-width:360px">
+    <div class="pin-modal-title" id="cofre-edit-titulo">🏺 Cofre de monedas</div>
+    <div class="pin-modal-sub" style="margin-bottom:14px">Cuántas monedas hay en el cofre</div>
+    <input type="hidden" id="cofre-edit-seccion"/>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span style="font-size:.88rem;min-width:70px">$10 c/u</span>
+        <input type="number" id="cofre-edit-m10" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span style="font-size:.88rem;min-width:70px">$5 c/u</span>
+        <input type="number" id="cofre-edit-m5" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span style="font-size:.88rem;min-width:70px">$2 c/u</span>
+        <input type="number" id="cofre-edit-m2" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span style="font-size:.88rem;min-width:70px">$1 c/u</span>
+        <input type="number" id="cofre-edit-m1" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span style="font-size:.88rem;min-width:70px">$0.50 c/u</span>
+        <input type="number" id="cofre-edit-m050" value="0" min="0" inputmode="numeric" oninput="calcCofreEditTotal()"
+          style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif"/>
+      </div>
+    </div>
+    <div style="text-align:center;background:rgba(120,80,255,.1);border:1px solid rgba(120,80,255,.4);border-radius:10px;padding:10px;margin-bottom:14px">
+      <div style="font-size:.7rem;color:#a78bfa;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Total en cofre</div>
+      <div id="cofre-edit-total" style="font-family:'Syne',sans-serif;font-weight:800;font-size:1.3rem;color:#a78bfa">$0.00</div>
+    </div>
+    <div class="pin-btn-row">
+      <button class="pin-btn-cancel" onclick="cerrarCofreModal()">Cancelar</button>
+      <button class="pin-btn-confirm" style="background:#7c3aed;color:#fff" onclick="guardarCofre()">💾 Guardar</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
