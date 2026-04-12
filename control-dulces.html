@@ -2246,30 +2246,10 @@
   // ── CONTEO DE CAJA ────────────────────────────────────────────────
   window.calcConteo = (seccion) => {
     const p = seccion === 'dulces' ? 'cd' : 'cc';
-    const monedas = [
-      { id: `${p}-m10`,   val: 10,   sub: `${p}-sub-m10`   },
-      { id: `${p}-m5`,    val: 5,    sub: `${p}-sub-m5`    },
-      { id: `${p}-m2`,    val: 2,    sub: `${p}-sub-m2`    },
-      { id: `${p}-m1`,    val: 1,    sub: `${p}-sub-m1`    },
-      { id: `${p}-m050`,  val: 0.5,  sub: `${p}-sub-m050`  },
-    ];
-    const billetes = [
-      { id: `${p}-b1000`, val: 1000, sub: `${p}-sub-b1000` },
-      { id: `${p}-b500`,  val: 500,  sub: `${p}-sub-b500`  },
-      { id: `${p}-b200`,  val: 200,  sub: `${p}-sub-b200`  },
-      { id: `${p}-b100`,  val: 100,  sub: `${p}-sub-b100`  },
-      { id: `${p}-b50`,   val: 50,   sub: `${p}-sub-b50`   },
-      { id: `${p}-b20`,   val: 20,   sub: `${p}-sub-b20`   },
-    ];
-    let sumM = 0, sumB = 0;
-    monedas.forEach(m => {
-      const qty = parseFloat(document.getElementById(m.id)?.value)||0;
-      sumM += qty * m.val;
-    });
-    billetes.forEach(b => {
-      const qty = parseFloat(document.getElementById(b.id)?.value)||0;
-      sumB += qty * b.val;
-    });
+    const monedas = [`${p}-m10`,`${p}-m5`,`${p}-m2`,`${p}-m1`,`${p}-m050`];
+    const billetes = [`${p}-b1000`,`${p}-b500`,`${p}-b200`,`${p}-b100`,`${p}-b50`,`${p}-b20`];
+    const sumM = monedas.reduce((a,id) => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
+    const sumB = billetes.reduce((a,id) => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
     const totalCaja = sumM + sumB;
     document.getElementById(`${p}-total-monedas`).textContent = `Total monedas: $${sumM.toFixed(2)}`;
     document.getElementById(`${p}-total-billetes`).textContent = `Total billetes: $${sumB.toFixed(2)}`;
@@ -2421,23 +2401,10 @@
 
   window.registrarCierreCaja = async (seccion) => {
     const p = seccion === 'dulces' ? 'cd' : 'cc';
-    const monedas = [
-      { id: `${p}-m10`,   val: 10   },
-      { id: `${p}-m5`,    val: 5    },
-      { id: `${p}-m2`,    val: 2    },
-      { id: `${p}-m1`,    val: 1    },
-      { id: `${p}-m050`,  val: 0.5  },
-    ];
-    const billetes = [
-      { id: `${p}-b1000`, val: 1000 },
-      { id: `${p}-b500`,  val: 500  },
-      { id: `${p}-b200`,  val: 200  },
-      { id: `${p}-b100`,  val: 100  },
-      { id: `${p}-b50`,   val: 50   },
-      { id: `${p}-b20`,   val: 20   },
-    ];
-    const sumM = monedas.reduce((a,m) => a + (parseFloat(document.getElementById(m.id)?.value)||0) * m.val, 0);
-    const sumB = billetes.reduce((a,b) => a + (parseFloat(document.getElementById(b.id)?.value)||0) * b.val, 0);
+    const monedas = [`${p}-m10`,`${p}-m5`,`${p}-m2`,`${p}-m1`,`${p}-m050`];
+    const billetes = [`${p}-b1000`,`${p}-b500`,`${p}-b200`,`${p}-b100`,`${p}-b50`,`${p}-b20`];
+    const sumM = monedas.reduce((a,id) => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
+    const sumB = billetes.reduce((a,id) => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
     const totalCaja = sumM + sumB;
     const inicio = parseFloat(document.getElementById(`caja-${seccion}-inicio`)?.value)||0;
     if (!inicio && !totalCaja) { showToast('Llena el conteo primero','error'); return; }
@@ -2653,7 +2620,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .conteo-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px}
 .conteo-row span:first-child{font-size:.82rem;color:var(--text);min-width:52px}
 .conteo-sub{font-size:.75rem;color:var(--accent);font-weight:700;min-width:36px;text-align:right;flex-shrink:0}
-.conteo-inp{width:70px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text);font-size:.9rem;text-align:right;outline:none;font-family:'DM Sans',sans-serif}
+.conteo-inp{width:70px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text);font-size:.9rem;text-align:right;outline:none;font-family:'DM Sans',sans-serif;-webkit-appearance:none;-moz-appearance:textfield;appearance:textfield}
+.conteo-inp::-webkit-outer-spin-button,.conteo-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .conteo-inp:focus{border-color:var(--accent)}
 .conteo-total{font-size:.78rem;color:var(--accent);font-weight:700;margin-top:6px;text-align:right;border-top:1px solid var(--border);padding-top:6px}
 .conteo-stat-box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px;text-align:center}
