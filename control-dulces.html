@@ -1228,6 +1228,20 @@
     if (filtro==='hoy')    filtered = ventas.filter(v => v.fecha?.toDate() >= hoy);
     if (filtro==='semana') { const s=new Date(hoy); s.setDate(s.getDate()-7); filtered=ventas.filter(v=>v.fecha?.toDate()>=s); }
     if (filtro==='mes')    { const m=new Date(hoy); m.setDate(m.getDate()-30); filtered=ventas.filter(v=>v.fecha?.toDate()>=m); }
+    if (filtro==='todo')   { filtered = ventas; }
+    if (filtro==='custom') {
+      const desdeStr = document.getElementById('ventas-fecha-desde')?.value;
+      const hastaStr = document.getElementById('ventas-fecha-hasta')?.value;
+      const desde = desdeStr ? new Date(desdeStr + 'T00:00:00') : null;
+      const hasta = hastaStr ? new Date(hastaStr + 'T23:59:59') : null;
+      filtered = ventas.filter(v => {
+        const f = v.fecha?.toDate();
+        if (!f) return false;
+        if (desde && f < desde) return false;
+        if (hasta && f > hasta) return false;
+        return true;
+      });
+    }
     // Filtro por nombre de producto o cliente
     if (busqueda) filtered = filtered.filter(v =>
       (v.productoNombre||'').toLowerCase().includes(busqueda) ||
@@ -2009,6 +2023,106 @@
     document.getElementById('stock-search')?.addEventListener('input', renderStock);
     document.getElementById('ventas-filtro')?.addEventListener('change', renderVentas);
   }, 600);
+
+  // ── CONTEO DE CAJA ────────────────────────────────────────────────
+  window.calcConteo = (seccion) => {
+    const p = seccion === 'dulces' ? 'cd' : 'cc';
+    const monedas = [
+      { id: `${p}-m10`,   val: 10   },
+      { id: `${p}-m5`,    val: 5    },
+      { id: `${p}-m2`,    val: 2    },
+      { id: `${p}-m1`,    val: 1    },
+      { id: `${p}-m050`,  val: 0.5  },
+    ];
+    const billetes = [
+      { id: `${p}-b1000`, val: 1000 },
+      { id: `${p}-b500`,  val: 500  },
+      { id: `${p}-b200`,  val: 200  },
+      { id: `${p}-b100`,  val: 100  },
+      { id: `${p}-b50`,   val: 50   },
+      { id: `${p}-b20`,   val: 20   },
+    ];
+    const sumM = monedas.reduce((a,m) => a + (parseFloat(document.getElementById(m.id)?.value)||0) * m.val, 0);
+    const sumB = billetes.reduce((a,b) => a + (parseFloat(document.getElementById(b.id)?.value)||0) * b.val, 0);
+    const totalCaja = sumM + sumB;
+    document.getElementById(`${p}-total-monedas`).textContent = `Total monedas: $${sumM.toFixed(2)}`;
+    document.getElementById(`${p}-total-billetes`).textContent = `Total billetes: $${sumB.toFixed(2)}`;
+
+    // Ventas del día
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const ventasHoy = seccion === 'dulces'
+      ? ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0)
+      : ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    const inicio = parseFloat(document.getElementById(`caja-${seccion}-inicio`)?.value)||0;
+    const esperado = inicio + ventasHoy;
+    const diferencia = totalCaja - esperado;
+
+    const resDiv = document.getElementById(`${p}-resultado`);
+    if (resDiv) {
+      resDiv.style.display = 'block';
+      document.getElementById(`${p}-stat-total`).textContent = `$${totalCaja.toFixed(2)}`;
+      document.getElementById(`${p}-stat-ventas`).textContent = `$${ventasHoy.toFixed(2)}`;
+      document.getElementById(`${p}-stat-inicio`).textContent = `$${inicio.toFixed(2)}`;
+      document.getElementById(`${p}-stat-esperado`).textContent = `$${esperado.toFixed(2)}`;
+      const difEl = document.getElementById(`${p}-diferencia`);
+      if (Math.abs(diferencia) < 0.01) {
+        difEl.style.background = 'rgba(61,220,132,.15)';
+        difEl.style.color = 'var(--green)';
+        difEl.textContent = '✅ Caja cuadrada perfectamente';
+      } else if (diferencia < 0) {
+        difEl.style.background = 'rgba(255,77,109,.15)';
+        difEl.style.color = 'var(--red)';
+        difEl.textContent = `⚠️ Falta $${Math.abs(diferencia).toFixed(2)}`;
+      } else {
+        difEl.style.background = 'rgba(255,159,67,.15)';
+        difEl.style.color = 'var(--orange)';
+        difEl.textContent = `ℹ️ Sobran $${diferencia.toFixed(2)}`;
+      }
+    }
+  };
+
+  window.registrarCierreCaja = async (seccion) => {
+    const p = seccion === 'dulces' ? 'cd' : 'cc';
+    const monedas = [
+      { id: `${p}-m10`,   val: 10   },
+      { id: `${p}-m5`,    val: 5    },
+      { id: `${p}-m2`,    val: 2    },
+      { id: `${p}-m1`,    val: 1    },
+      { id: `${p}-m050`,  val: 0.5  },
+    ];
+    const billetes = [
+      { id: `${p}-b1000`, val: 1000 },
+      { id: `${p}-b500`,  val: 500  },
+      { id: `${p}-b200`,  val: 200  },
+      { id: `${p}-b100`,  val: 100  },
+      { id: `${p}-b50`,   val: 50   },
+      { id: `${p}-b20`,   val: 20   },
+    ];
+    const sumM = monedas.reduce((a,m) => a + (parseFloat(document.getElementById(m.id)?.value)||0) * m.val, 0);
+    const sumB = billetes.reduce((a,b) => a + (parseFloat(document.getElementById(b.id)?.value)||0) * b.val, 0);
+    const totalCaja = sumM + sumB;
+    const inicio = parseFloat(document.getElementById(`caja-${seccion}-inicio`)?.value)||0;
+    if (!inicio && !totalCaja) { showToast('Llena el conteo primero','error'); return; }
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const ventasHoy = seccion === 'dulces'
+      ? ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0)
+      : ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    const esperado = inicio + ventasHoy;
+    const diferencia = totalCaja - esperado;
+    const col = seccion === 'dulces' ? 'caja_dulces' : 'caja_ciber';
+    await addDoc(collection(db, col), {
+      tipo: 'cierre_caja',
+      concepto: `Cierre de caja — ${diferencia < -0.01 ? `Falta $${Math.abs(diferencia).toFixed(2)}` : diferencia > 0.01 ? `Sobran $${diferencia.toFixed(2)}` : 'Cuadrada'}`,
+      monto: totalCaja,
+      turnoInicio: inicio,
+      ventasHoy,
+      totalCaja,
+      diferencia,
+      fecha: Timestamp.now(),
+      registradoPor: currentUser.email
+    });
+    showToast(diferencia < -0.01 ? `⚠️ Cierre guardado — Falta $${Math.abs(diferencia).toFixed(2)}` : '✅ Cierre guardado — Caja cuadrada');
+  };
 </script>
 
 <style>
@@ -2040,7 +2154,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 /* NAV */
 .bottom-nav{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);display:flex;overflow-x:auto;scrollbar-width:none;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
 .bottom-nav::-webkit-scrollbar{display:none}
-.nav-btn{flex:0 0 auto;min-width:58px;background:none;border:none;color:var(--muted);padding:10px 4px;font-size:.62rem;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;transition:color .2s;font-family:'DM Sans',sans-serif}
+.nav-btn{flex:1;min-width:0;background:none;border:none;color:var(--muted);padding:10px 4px;font-size:.62rem;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;transition:color .2s;font-family:'DM Sans',sans-serif}
 .nav-btn .icon{font-size:1.2rem}
 .nav-btn.active{color:var(--accent)}
 
@@ -2198,6 +2312,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .ct-ganancia-line{font-size:.75rem;color:var(--green);margin-top:5px;text-align:right}
 
 /* MISC */
+.conteo-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px}
+.conteo-row span{font-size:.85rem;color:var(--text);min-width:40px}
+.conteo-inp{width:70px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text);font-size:.9rem;text-align:right;outline:none;font-family:'DM Sans',sans-serif}
+.conteo-inp:focus{border-color:var(--accent)}
+.conteo-total{font-size:.78rem;color:var(--accent);font-weight:700;margin-top:6px;text-align:right;border-top:1px solid var(--border);padding-top:6px}
+.conteo-stat-box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px;text-align:center}
+.conteo-stat-label{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.conteo-stat-val{font-family:'Syne',sans-serif;font-weight:800;font-size:1rem}
+.conteo-stat-val.green{color:var(--green)}
 .empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:.87rem}
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);padding:11px 22px;border-radius:10px;font-size:.87rem;font-weight:500;opacity:0;transition:all .3s;z-index:999;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -2510,7 +2633,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <button class="btn-primary" onclick="registrarVenta()">Registrar</button>
       </div>
       <div class="page-title" style="margin-top:18px">Historial</div>
-      <select class="filtro-select" id="ventas-filtro" onchange="renderVentas()">
+      <select class="filtro-select" id="ventas-filtro" onchange="(function(){const v=this.value;document.getElementById('ventas-custom-fechas').style.display=v==='custom'?'flex':'none';renderVentas();}).call(this)">
         <option value="hoy">📅 Hoy</option>
         <option value="semana">📆 Últimos 7 días</option>
         <option value="mes">🗓 Últimos 30 días</option>
@@ -2711,8 +2834,57 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     <!-- Panel Dulces -->
     <div id="caja-panel-dulces">
       <div id="caja-resumen-dulces" style="margin-bottom:14px"><div class="empty-state">Cargando...</div></div>
+
+      <!-- CONTEO DE CAJA -->
       <div class="card">
-        <div class="card-title">➕ Registrar movimiento — Dulces</div>
+        <div class="card-title">🧮 Conteo de caja — Dulces</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <!-- Monedas -->
+          <div>
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas</div>
+            <div class="conteo-row"><span>$10</span><input type="number" id="cd-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$5</span><input type="number" id="cd-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$2</span><input type="number" id="cd-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$1</span><input type="number" id="cd-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$0.50</span><input type="number" id="cd-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-total" id="cd-total-monedas">Total monedas: $0.00</div>
+          </div>
+          <!-- Billetes -->
+          <div>
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes</div>
+            <div class="conteo-row"><span>$1000</span><input type="number" id="cd-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$500</span><input type="number" id="cd-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$200</span><input type="number" id="cd-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$100</span><input type="number" id="cd-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$50</span><input type="number" id="cd-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$20</span><input type="number" id="cd-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-total" id="cd-total-billetes">Total billetes: $0.00</div>
+          </div>
+        </div>
+        <!-- Inicio de turno -->
+        <div style="margin-top:14px">
+          <div class="form-group">
+            <label>Dinero inicio de turno ($) — con cuánto abriste caja</label>
+            <input type="number" id="caja-dulces-inicio" placeholder="Ej: 90.00" step="0.01" inputmode="decimal" oninput="calcConteo('dulces')"/>
+          </div>
+        </div>
+        <!-- Resultado del conteo -->
+        <div id="cd-resultado" style="margin-top:14px;padding:14px;background:var(--surface2);border-radius:12px;border:1px solid var(--border);display:none">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div class="conteo-stat-box"><div class="conteo-stat-label">Total en caja</div><div class="conteo-stat-val" id="cd-stat-total">$0.00</div></div>
+            <div class="conteo-stat-box"><div class="conteo-stat-label">Ventas del día</div><div class="conteo-stat-val green" id="cd-stat-ventas">$0.00</div></div>
+            <div class="conteo-stat-box"><div class="conteo-stat-label">Inicio de turno</div><div class="conteo-stat-val" id="cd-stat-inicio">$0.00</div></div>
+            <div class="conteo-stat-box"><div class="conteo-stat-label">Dinero final esperado</div><div class="conteo-stat-val" id="cd-stat-esperado">$0.00</div></div>
+          </div>
+          <div id="cd-diferencia" style="text-align:center;padding:12px;border-radius:10px;font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem"></div>
+        </div>
+        <button class="btn-primary" style="margin-top:14px;background:var(--surface2);border:1px solid var(--accent);color:var(--accent)" onclick="calcConteo('dulces')">🧮 Calcular conteo</button>
+        <button class="btn-primary" onclick="registrarCierreCaja('dulces')">💾 Guardar cierre de caja</button>
+      </div>
+
+      <!-- Movimiento extra -->
+      <div class="card" style="margin-top:10px">
+        <div class="card-title">➕ Registrar movimiento extra — Dulces</div>
         <div class="form-grid">
           <div class="form-group form-full"><label>Tipo</label>
             <select id="caja-dulces-tipo">
@@ -2722,19 +2894,64 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
             </select>
           </div>
           <div class="form-group form-full"><label>Concepto *</label><input type="text" id="caja-dulces-concepto" placeholder="Ej: Pago proveedor, gastos…"/></div>
-          <div class="form-group"><label>Monto ($) *</label><input type="number" id="caja-dulces-monto" placeholder="0.00" step="0.01" inputmode="decimal"/></div>
-          <div class="form-group"><label>Dinero inicio turno ($)</label><input type="number" id="caja-dulces-inicio" placeholder="Ej: 90.00" step="0.01" inputmode="decimal"/></div>
+          <div class="form-group form-full"><label>Monto ($) *</label><input type="number" id="caja-dulces-monto" placeholder="0.00" step="0.01" inputmode="decimal"/></div>
         </div>
         <button class="btn-primary" onclick="registrarMovCaja('dulces')">Registrar movimiento</button>
       </div>
+
       <div class="page-title" style="margin-top:18px">Movimientos de hoy</div>
       <div id="caja-hist-dulces"><div class="empty-state">Sin movimientos hoy</div></div>
     </div>
+
     <!-- Panel Ciber -->
     <div id="caja-panel-ciber" style="display:none">
       <div id="caja-resumen-ciber" style="margin-bottom:14px"><div class="empty-state">Cargando...</div></div>
+
+      <!-- CONTEO DE CAJA CIBER -->
       <div class="card">
-        <div class="card-title">➕ Registrar movimiento — Ciber</div>
+        <div class="card-title">🧮 Conteo de caja — Ciber</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas</div>
+            <div class="conteo-row"><span>$10</span><input type="number" id="cc-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$5</span><input type="number" id="cc-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$2</span><input type="number" id="cc-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$1</span><input type="number" id="cc-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$0.50</span><input type="number" id="cc-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-total" id="cc-total-monedas">Total monedas: $0.00</div>
+          </div>
+          <div>
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes</div>
+            <div class="conteo-row"><span>$1000</span><input type="number" id="cc-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$500</span><input type="number" id="cc-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$200</span><input type="number" id="cc-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$100</span><input type="number" id="cc-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$50</span><input type="number" id="cc-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$20</span><input type="number" id="cc-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-total" id="cc-total-billetes">Total billetes: $0.00</div>
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <div class="form-group">
+            <label>Dinero inicio de turno ($) — con cuánto abriste caja</label>
+            <input type="number" id="caja-ciber-inicio" placeholder="Ej: 783.00" step="0.01" inputmode="decimal" oninput="calcConteo('ciber')"/>
+          </div>
+        </div>
+        <div id="cc-resultado" style="margin-top:14px;padding:14px;background:var(--surface2);border-radius:12px;border:1px solid var(--border);display:none">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div class="conteo-stat-box"><div class="conteo-stat-label">Total en caja</div><div class="conteo-stat-val" id="cc-stat-total">$0.00</div></div>
+            <div class="conteo-stat-box"><div class="conteo-stat-label">Ventas del día</div><div class="conteo-stat-val green" id="cc-stat-ventas">$0.00</div></div>
+            <div class="conteo-stat-box"><div class="conteo-stat-label">Inicio de turno</div><div class="conteo-stat-val" id="cc-stat-inicio">$0.00</div></div>
+            <div class="conteo-stat-box"><div class="conteo-stat-label">Dinero final esperado</div><div class="conteo-stat-val" id="cc-stat-esperado">$0.00</div></div>
+          </div>
+          <div id="cc-diferencia" style="text-align:center;padding:12px;border-radius:10px;font-family:'Syne',sans-serif;font-weight:800;font-size:1.1rem"></div>
+        </div>
+        <button class="btn-primary" style="margin-top:14px;background:var(--surface2);border:1px solid var(--accent);color:var(--accent)" onclick="calcConteo('ciber')">🧮 Calcular conteo</button>
+        <button class="btn-primary" onclick="registrarCierreCaja('ciber')">💾 Guardar cierre de caja</button>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <div class="card-title">➕ Registrar movimiento extra — Ciber</div>
         <div class="form-grid">
           <div class="form-group form-full"><label>Tipo</label>
             <select id="caja-ciber-tipo">
@@ -2744,11 +2961,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
             </select>
           </div>
           <div class="form-group form-full"><label>Concepto *</label><input type="text" id="caja-ciber-concepto" placeholder="Ej: Renta, gastos del local…"/></div>
-          <div class="form-group"><label>Monto ($) *</label><input type="number" id="caja-ciber-monto" placeholder="0.00" step="0.01" inputmode="decimal"/></div>
-          <div class="form-group"><label>Dinero inicio turno ($)</label><input type="number" id="caja-ciber-inicio" placeholder="Ej: 783.00" step="0.01" inputmode="decimal"/></div>
+          <div class="form-group form-full"><label>Monto ($) *</label><input type="number" id="caja-ciber-monto" placeholder="0.00" step="0.01" inputmode="decimal"/></div>
         </div>
         <button class="btn-primary" onclick="registrarMovCaja('ciber')">Registrar movimiento</button>
       </div>
+
       <div class="page-title" style="margin-top:18px">Movimientos de hoy</div>
       <div id="caja-hist-ciber"><div class="empty-state">Sin movimientos hoy</div></div>
     </div>
