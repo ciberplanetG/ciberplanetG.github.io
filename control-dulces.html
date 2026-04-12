@@ -933,6 +933,8 @@
       loadCiberTrabajos();
       loadReparaciones();
       loadCajas();
+      // Inicializar ticket con una línea vacía
+      setTimeout(() => { _ticketLineas = []; agregarLineaTicket(); }, 400);
       // Ocultar pestaña Servicios para alberto
       const tabServ = document.getElementById('ciber-tab-servicios');
       if (tabServ) tabServ.style.display = user.email === ALBERTO_EMAIL ? 'none' : '';
@@ -1307,6 +1309,8 @@
     const cont = document.getElementById('dashboard-content');
     if (!cont) return;
     const hoy = new Date(); hoy.setHours(0,0,0,0);
+
+    // Dulces
     const vh  = ventas.filter(v => v.fecha?.toDate() >= hoy);
     const tv  = vh.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
     const td  = vh.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
@@ -1314,11 +1318,20 @@
     const tc  = vh.reduce((a,v)=>a+(v.costoTotal||0),0);
     const nv  = vh.filter(v=>v.tipo==='venta').length;
     const nd  = vh.filter(v=>v.tipo==='debe').length;
+
+    // Ciber
+    const ch  = ciberTrabajos.filter(t => t.fecha?.toDate() >= hoy);
+    const tc2 = ch.filter(t=>t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    const tf2 = ch.filter(t=>t.tipo==='fiado').reduce((a,t)=>a+(t.total||0),0);
+    const tg2 = ch.reduce((a,t)=>a+(t.gananciaTotal||0),0);
+
     const pp  = {};
     vh.forEach(v => { if(!pp[v.productoNombre]) pp[v.productoNombre]={total:0,cantidad:0};
       pp[v.productoNombre].total+=v.total||0; pp[v.productoNombre].cantidad+=v.cantidad||0; });
     const top = Object.entries(pp).sort((a,b)=>b[1].total-a[1].total).slice(0,5);
+
     cont.innerHTML = `
+      <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">🍬 Dulces</div>
       <div class="dash-grid">
         <div class="dash-card accent">
           <div class="dash-label">Ventas del día</div>
@@ -1338,12 +1351,31 @@
         <div class="dash-card">
           <div class="dash-label">Productos en stock</div>
           <div class="dash-value">${productos.length}</div>
-          <div class="dash-sub">${productos.filter(p=>p.stock<=5).length} con stock bajo</div>
+          <div class="dash-sub">${productos.filter(p=>p.stock<=5).length} stock bajo</div>
         </div>
       </div>
-      ${top.length?`<div class="top-section"><div class="section-title">Top productos hoy</div>
+
+      <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:14px 0 8px">🖥️ Ciber</div>
+      <div class="dash-grid">
+        <div class="dash-card accent">
+          <div class="dash-label">Cobrado hoy</div>
+          <div class="dash-value">$${tc2.toFixed(2)}</div>
+          <div class="dash-sub">${ch.filter(t=>t.tipo==='cobrado').length} trabajos</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-label">Ganancia ciber</div>
+          <div class="dash-value green">$${tg2.toFixed(2)}</div>
+          <div class="dash-sub">${ch.length} registros</div>
+        </div>
+        <div class="dash-card" style="grid-column:1/-1">
+          <div class="dash-label">🤝 Fiados ciber pendientes</div>
+          <div class="dash-value orange">$${tf2.toFixed(2)}</div>
+        </div>
+      </div>
+
+      ${top.length?`<div class="top-section"><div class="section-title">Top dulces hoy</div>
         ${top.map(([n,d])=>`<div class="top-row"><span>${n}</span><span>${d.cantidad} pzas · <b>$${d.total.toFixed(2)}</b></span></div>`).join('')}
-      </div>`:'<div class="empty-state">Sin ventas hoy todavía</div>'}
+      </div>`:''}
       <button class="btn-excel" onclick="exportarExcel()">📊 Exportar Excel del día</button>`;
   }
 
@@ -1779,11 +1811,126 @@
     showToast(tipo==='fiado'?`Fiado: ${cliente||'cliente'} ✓`:'Trabajo registrado ✓');
   };
 
+  window.registrarTrabajoCiber = async () => { /* legacy — reemplazado por ticket */ };
+
   window.eliminarTrabajoCiber = async (id) => {
     if (currentUser?.email !== OWNER_EMAIL) { showToast('Solo el dueño puede eliminar','error'); return; }
     if (!confirm('¿Eliminar este trabajo?')) return;
     await deleteDoc(doc(db,'ciber_trabajos',id));
     showToast('Trabajo eliminado');
+  };
+
+  // ── SISTEMA DE TICKET CIBER ───────────────────────────────────────
+  let _ticketLineas = [];
+
+  function renderTicketLineas() {
+    const cont = document.getElementById('ticket-lineas');
+    if (!cont) return;
+    if (!_ticketLineas.length) {
+      cont.innerHTML = '';
+      const bar = document.getElementById('ticket-total-bar');
+      if (bar) bar.style.display = 'none';
+      return;
+    }
+    cont.innerHTML = `
+      <div class="ticket-header">
+        <span>Descripción</span><span style="text-align:center">Cant.</span><span style="text-align:right">Precio</span><span></span>
+      </div>` +
+    _ticketLineas.map((l,i) => `
+      <div class="ticket-linea">
+        <input class="ticket-linea-desc" type="text" value="${l.desc}" placeholder="Servicio / producto…"
+          oninput="_ticketLineas[${i}].desc=this.value" list="ciber-servicios-dl"/>
+        <input class="ticket-linea-qty" type="number" value="${l.qty}" min="1" inputmode="numeric"
+          oninput="_ticketLineas[${i}].qty=parseFloat(this.value)||1;actualizarTotalTicket()"/>
+        <input class="ticket-linea-precio" type="number" value="${l.precio||''}" placeholder="0.00" step="0.01" inputmode="decimal"
+          oninput="_ticketLineas[${i}].precio=parseFloat(this.value)||0;actualizarTotalTicket()"/>
+        <button class="ticket-linea-del" onclick="eliminarLineaTicket(${i})">✕</button>
+      </div>`).join('');
+
+    // datalist con servicios del catálogo
+    let dl = document.getElementById('ciber-servicios-dl');
+    if (!dl) { dl = document.createElement('datalist'); dl.id='ciber-servicios-dl'; document.body.appendChild(dl); }
+    dl.innerHTML = ciberServicios.map(s=>`<option value="${s.nombre}" data-precio="${s.precioVenta}">`).join('');
+
+    actualizarTotalTicket();
+  }
+
+  window.agregarLineaTicket = () => {
+    _ticketLineas.push({ desc: '', qty: 1, precio: 0 });
+    renderTicketLineas();
+    // Auto-focus en el último campo de descripción
+    setTimeout(() => {
+      const inputs = document.querySelectorAll('.ticket-linea-desc');
+      if (inputs.length) inputs[inputs.length-1].focus();
+    }, 50);
+  };
+
+  window.eliminarLineaTicket = (i) => {
+    _ticketLineas.splice(i, 1);
+    renderTicketLineas();
+  };
+
+  window.actualizarTotalTicket = () => {
+    const total = _ticketLineas.reduce((a,l) => a + (l.precio||0)*(l.qty||1), 0);
+    const bar = document.getElementById('ticket-total-bar');
+    const num = document.getElementById('ticket-total-num');
+    if (bar) bar.style.display = _ticketLineas.length ? 'flex' : 'none';
+    if (num) num.textContent = `$${total.toFixed(2)}`;
+  };
+
+  // Auto-rellenar precio cuando se elige un servicio del catálogo
+  document.addEventListener('input', e => {
+    if (!e.target.classList.contains('ticket-linea-desc')) return;
+    const val = e.target.value.trim();
+    const s = ciberServicios.find(x => x.nombre.toLowerCase() === val.toLowerCase());
+    if (!s) return;
+    const row = e.target.closest('.ticket-linea');
+    if (!row) return;
+    const precioInput = row.querySelector('.ticket-linea-precio');
+    if (precioInput && !precioInput.value) {
+      precioInput.value = s.precioVenta;
+      precioInput.dispatchEvent(new Event('input'));
+    }
+  });
+
+  window.registrarTicketCiber = async () => {
+    const lineas = _ticketLineas.filter(l => l.desc.trim() && l.precio > 0);
+    if (!lineas.length) { showToast('Agrega al menos un producto con precio','error'); return; }
+    const tipo    = document.getElementById('ct-tipo').value;
+    const cliente = document.getElementById('ct-cliente').value.trim();
+    const grandTotal = lineas.reduce((a,l) => a + l.precio * l.qty, 0);
+
+    // Calcular ganancia: buscar en catálogo, si no → 0 costo
+    const gananciaTotal = lineas.reduce((a,l) => {
+      const s = ciberServicios.find(x => x.nombre.toLowerCase() === l.desc.toLowerCase());
+      const costo = s ? s.costoUnitario * l.qty : 0;
+      return a + (l.precio * l.qty) - costo;
+    }, 0);
+
+    const nombreResumen = lineas.map(l => `${l.qty > 1 ? l.qty+'× ' : ''}${l.desc}`).join(' + ');
+
+    await addDoc(collection(db,'ciber_trabajos'), {
+      servicioId: '__ticket__',
+      servicioNombre: nombreResumen,
+      categoria: 'Ticket',
+      cantidad: lineas.length,
+      precioUnitario: grandTotal,
+      costoUnitario: 0,
+      total: grandTotal,
+      gananciaTotal,
+      costoTotal: grandTotal - gananciaTotal,
+      tipo, cliente,
+      lineas: lineas.map(l=>({desc:l.desc, qty:l.qty, precio:l.precio})),
+      fecha: Timestamp.now(),
+      vendedor: currentUser.email
+    });
+
+    // Reset
+    _ticketLineas = [];
+    renderTicketLineas();
+    document.getElementById('ct-cliente').value = '';
+    document.getElementById('ct-tipo').value = 'cobrado';
+    showToast(tipo==='fiado' ? `Fiado: ${cliente||'cliente'} — $${grandTotal.toFixed(2)}` : `Cobro registrado — $${grandTotal.toFixed(2)} ✓`);
   };
 
   // ── Renders ciber ──────────────────────────────────────────────────
@@ -1826,6 +1973,20 @@
     if (filtro==='hoy')    filtered = ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy);
     if (filtro==='semana') { const s=new Date(hoy);s.setDate(s.getDate()-7);filtered=ciberTrabajos.filter(t=>t.fecha?.toDate()>=s); }
     if (filtro==='mes')    { const m=new Date(hoy);m.setDate(m.getDate()-30);filtered=ciberTrabajos.filter(t=>t.fecha?.toDate()>=m); }
+    if (filtro==='todo')   { filtered = ciberTrabajos; }
+    if (filtro==='custom') {
+      const desdeStr = document.getElementById('ciber-fecha-desde')?.value;
+      const hastaStr = document.getElementById('ciber-fecha-hasta')?.value;
+      const desde = desdeStr ? new Date(desdeStr + 'T00:00:00') : null;
+      const hasta = hastaStr ? new Date(hastaStr + 'T23:59:59') : null;
+      filtered = ciberTrabajos.filter(t => {
+        const f = t.fecha?.toDate();
+        if (!f) return false;
+        if (desde && f < desde) return false;
+        if (hasta && f > hasta) return false;
+        return true;
+      });
+    }
     if (!filtered.length)  { cont.innerHTML='<div class="empty-state">Sin trabajos en este período</div>'; return; }
 
     const totalC=filtered.filter(t=>t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
@@ -1857,6 +2018,11 @@
       const f  = t.fecha?.toDate();
       const fs = f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
       const btnDel = esOwner?`<button class="btn-del-venta" onclick="eliminarTrabajoCiber('${t.id}')">🗑</button>`:'';
+      const lineasHtml = t.lineas?.length
+        ? `<div style="font-size:.78rem;color:var(--muted);margin:5px 0 3px;line-height:1.7">
+            ${t.lineas.map(l=>`<span style="display:inline-block;background:var(--surface2);border-radius:5px;padding:1px 8px;margin:1px 2px 1px 0">${l.qty>1?l.qty+'×':''} ${l.desc} <b style="color:var(--text)">$${(l.precio*l.qty).toFixed(2)}</b></span>`).join('')}
+           </div>`
+        : '';
       return `<div class="venta-card ${t.tipo==='fiado'?'venta-debe':''}">
         <div class="venta-header">
           <span class="venta-nombre">${t.servicioNombre}</span>
@@ -1865,13 +2031,12 @@
             ${btnDel}
           </div>
         </div>
+        ${lineasHtml}
         <div class="venta-info">
-          <span>${t.cantidad} × $${(t.precioUnitario||0).toFixed(2)}</span>
           <span>Total: <b>$${(t.total||0).toFixed(2)}</b></span>
           <span class="ganancia">Ganancia: $${(t.gananciaTotal||0).toFixed(2)}</span>
         </div>
         ${t.cliente?`<div class="venta-cliente">👤 ${t.cliente}</div>`:''}
-        ${t.nota?`<div class="venta-cliente" style="color:var(--muted)">📝 ${t.nota}</div>`:''}
         <div class="venta-footer">${fs} · ${t.vendedor}</div>
       </div>`;
     }).join('');
@@ -2321,6 +2486,20 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .conteo-stat-label{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
 .conteo-stat-val{font-family:'Syne',sans-serif;font-weight:800;font-size:1rem}
 .conteo-stat-val.green{color:var(--green)}
+/* TICKET CIBER */
+.ticket-linea{display:flex;align-items:center;gap:8px;margin-bottom:8px;animation:fadeIn .15s ease}
+.ticket-linea-desc{flex:1;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 11px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif}
+.ticket-linea-desc:focus{border-color:var(--accent)}
+.ticket-linea-precio{width:80px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 8px;color:var(--text);font-size:.9rem;text-align:right;outline:none;font-family:'DM Sans',sans-serif}
+.ticket-linea-precio:focus{border-color:var(--accent)}
+.ticket-linea-qty{width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 6px;color:var(--text);font-size:.9rem;text-align:center;outline:none;font-family:'DM Sans',sans-serif}
+.ticket-linea-qty:focus{border-color:var(--accent)}
+.ticket-linea-del{background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer;padding:4px 6px;border-radius:6px;flex-shrink:0;transition:color .15s}
+.ticket-linea-del:hover{color:var(--red)}
+.btn-ticket-add{width:100%;background:none;border:1.5px dashed var(--border);color:var(--muted);border-radius:10px;padding:11px;font-family:'DM Sans',sans-serif;font-size:.9rem;cursor:pointer;transition:all .2s;margin-top:4px}
+.btn-ticket-add:hover{border-color:var(--accent);color:var(--accent)}
+.ticket-header{display:grid;grid-template-columns:1fr 52px 80px 28px;gap:8px;margin-bottom:4px}
+.ticket-header span{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:0 2px}
 .empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:.87rem}
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);padding:11px 22px;border-radius:10px;font-size:.87rem;font-weight:500;opacity:0;transition:all .3s;z-index:999;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -2675,97 +2854,53 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <div class="empty-state">Cargando...</div>
         </div>
 
-        <!-- Formulario registro rápido -->
+        <!-- Formulario tipo ticket -->
         <div class="card">
-          <div class="card-title">➕ Registrar trabajo</div>
-          <div class="form-grid">
+          <div class="card-title">🧾 Registrar cobro</div>
 
-            <!-- Servicio base -->
-            <div class="form-group form-full">
-              <label>Servicio *</label>
-              <select id="ct-servicio" onchange="onCiberServicioChange()">
-                <option value="">— Selecciona servicio —</option>
-                <option value="__libre__">✏️ Cobro libre (escribe el monto)</option>
-              </select>
-            </div>
+          <!-- Líneas del ticket -->
+          <div id="ticket-lineas"></div>
 
-            <!-- Cobro libre -->
-            <div class="form-group form-full" id="ct-libre-wrap" style="display:none">
-              <label>Descripción del cobro *</label>
-              <input type="text" id="ct-libre-desc" placeholder="Ej: Buscar imágenes, Llenar formulario…" oninput="calcCiberTotal()"/>
-            </div>
-            <div class="form-group" id="ct-libre-precio-wrap" style="display:none">
-              <label>Monto a cobrar ($) *</label>
-              <input type="number" id="ct-libre-precio" placeholder="0.00" step="0.01" inputmode="decimal" oninput="calcCiberTotal()"/>
-            </div>
-            <div class="form-group" id="ct-libre-costo-wrap" style="display:none">
-              <label>Costo (opcional $)</label>
-              <input type="number" id="ct-libre-costo" placeholder="0.00" step="0.01" inputmode="decimal" oninput="calcCiberTotal()"/>
-            </div>
+          <!-- Botón agregar línea -->
+          <button class="btn-ticket-add" onclick="agregarLineaTicket()">＋ Agregar producto / servicio</button>
 
-            <!-- Cantidad y tipo -->
-            <div class="form-group" id="ct-cant-wrap">
-              <label>Cantidad</label>
-              <input type="number" id="ct-cantidad" value="1" min="1" inputmode="numeric" oninput="calcCiberTotal()"/>
-            </div>
-            <div class="form-group">
-              <label>Tipo</label>
-              <select id="ct-tipo">
-                <option value="cobrado">✅ Cobrado</option>
-                <option value="fiado">🤝 Fiado</option>
-              </select>
-            </div>
-
-            <!-- Separador impresiones -->
-            <div class="form-full" style="border-top:1px solid var(--border);margin:4px 0;padding-top:10px">
-              <span style="font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600">🖨️ Impresiones (opcional)</span>
-            </div>
-
-            <!-- B&N -->
-            <div class="form-group">
-              <label>Hojas B&N</label>
-              <input type="number" id="ct-hojas-bn" value="0" min="0" inputmode="numeric" oninput="calcCiberTotal()"/>
-            </div>
-            <div class="form-group">
-              <label>Precio/hoja B&N ($)</label>
-              <input type="number" id="ct-precio-bn" placeholder="2.00" step="0.01" inputmode="decimal" oninput="calcCiberTotal()"/>
-            </div>
-            <div class="form-group">
-              <label>Hojas Color</label>
-              <input type="number" id="ct-hojas-color" value="0" min="0" inputmode="numeric" oninput="calcCiberTotal()"/>
-            </div>
-            <div class="form-group">
-              <label>Precio/hoja Color ($)</label>
-              <input type="number" id="ct-precio-color" placeholder="5.00" step="0.01" inputmode="decimal" oninput="calcCiberTotal()"/>
-            </div>
-
-            <!-- Cliente y nota -->
-            <div class="form-group form-full">
-              <label>Cliente (opcional)</label>
-              <input type="text" id="ct-cliente" placeholder="Ej: María López"/>
-            </div>
-            <div class="form-group form-full">
-              <label>Nota / descripción (opcional)</label>
-              <input type="text" id="ct-nota" placeholder="Ej: Recibo de luz, 3 hojas color"/>
-            </div>
-
-            <!-- Total en vivo -->
-            <div class="form-full" id="ct-total-wrap" style="display:none">
-              <div class="ciber-total-card" id="ct-total-preview"></div>
-            </div>
-
+          <!-- Total en vivo -->
+          <div id="ticket-total-bar" style="display:none;margin-top:12px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--accent);display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:.85rem;color:var(--muted)">Total a cobrar</span>
+            <span id="ticket-total-num" style="font-family:'Syne',sans-serif;font-weight:800;font-size:1.3rem;color:var(--accent)">$0.00</span>
           </div>
-          <button class="btn-primary" onclick="registrarTrabajoCiber()">Registrar trabajo</button>
+
+          <!-- Tipo y cliente en una fila compacta -->
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <select id="ct-tipo" style="flex:1;min-width:140px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif">
+              <option value="cobrado">✅ Cobrado</option>
+              <option value="fiado">🤝 Fiado</option>
+            </select>
+            <input type="text" id="ct-cliente" placeholder="👤 Cliente (opcional)" style="flex:1;min-width:140px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          </div>
+
+          <button class="btn-primary" style="margin-top:10px" onclick="registrarTicketCiber()">💾 Registrar cobro</button>
         </div>
 
         <!-- Historial de trabajos -->
         <div class="page-title" style="margin-top:18px">Historial</div>
-        <select class="filtro-select" id="ciber-filtro">
+        <select class="filtro-select" id="ciber-filtro" onchange="(function(){const v=this.value;document.getElementById('ciber-custom-fechas').style.display=v==='custom'?'flex':'none';renderCiberTrabajos();}).call(this)">
           <option value="hoy">📅 Hoy</option>
           <option value="semana">📆 Últimos 7 días</option>
           <option value="mes">🗓 Últimos 30 días</option>
           <option value="todo">📋 Todo el historial</option>
+          <option value="custom">🗓 Fechas personalizadas</option>
         </select>
+        <div id="ciber-custom-fechas" style="display:none;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:130px">
+            <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Desde</label>
+            <input type="date" id="ciber-fecha-desde" onchange="renderCiberTrabajos()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          </div>
+          <div style="flex:1;min-width:130px">
+            <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
+            <input type="date" id="ciber-fecha-hasta" onchange="renderCiberTrabajos()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          </div>
+        </div>
         <div id="ciber-trabajos-list"><div class="empty-state">Cargando...</div></div>
       </div>
 
@@ -2820,12 +2955,10 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       </div>
     </div>
 
-  </div><!-- /content -->
-
-  <!-- ══════════════════════════════════════════
-       CAJAS TAB
-  ══════════════════════════════════════════ -->
-  <div class="tab-content" id="tab-cajas">
+    <!-- ══════════════════════════════════════════
+         CAJAS TAB
+    ══════════════════════════════════════════ -->
+    <div class="tab-content" id="tab-cajas">
     <div class="page-title">🏦 Control de Cajas</div>
     <div class="ciber-tabs">
       <button id="caja-tab-dulces" class="ciber-tab ciber-tab-active" onclick="setCajaVista('dulces')">🍬 Dulces</button>
@@ -2969,7 +3102,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
       <div class="page-title" style="margin-top:18px">Movimientos de hoy</div>
       <div id="caja-hist-ciber"><div class="empty-state">Sin movimientos hoy</div></div>
     </div>
-  </div>
+  </div><!-- /tab-cajas -->
+
+  </div><!-- /content -->
 
   <nav class="bottom-nav">
     <button class="nav-btn active" data-tab="dashboard" onclick="showTab('dashboard')">
