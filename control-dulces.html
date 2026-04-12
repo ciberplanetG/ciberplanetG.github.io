@@ -1234,8 +1234,16 @@
     if (filtro==='custom') {
       const desdeStr = document.getElementById('ventas-fecha-desde')?.value;
       const hastaStr = document.getElementById('ventas-fecha-hasta')?.value;
-      const desde = desdeStr ? new Date(desdeStr + 'T00:00:00') : null;
-      const hasta = hastaStr ? new Date(hastaStr + 'T23:59:59') : null;
+      // Parsear como fecha LOCAL (no UTC) para evitar desfase de zona horaria
+      const parseFechaLocal = (str, esHasta) => {
+        if (!str) return null;
+        const [y,m,d] = str.split('-').map(Number);
+        const fecha = new Date(y, m-1, d);
+        if (esHasta) { fecha.setHours(23,59,59,999); }
+        return fecha;
+      };
+      const desde = parseFechaLocal(desdeStr, false);
+      const hasta  = parseFechaLocal(hastaStr, true);
       filtered = ventas.filter(v => {
         const f = v.fecha?.toDate();
         if (!f) return false;
@@ -1977,8 +1985,15 @@
     if (filtro==='custom') {
       const desdeStr = document.getElementById('ciber-fecha-desde')?.value;
       const hastaStr = document.getElementById('ciber-fecha-hasta')?.value;
-      const desde = desdeStr ? new Date(desdeStr + 'T00:00:00') : null;
-      const hasta = hastaStr ? new Date(hastaStr + 'T23:59:59') : null;
+      const parseFechaLocal = (str, esHasta) => {
+        if (!str) return null;
+        const [y,m,d] = str.split('-').map(Number);
+        const fecha = new Date(y, m-1, d);
+        if (esHasta) { fecha.setHours(23,59,59,999); }
+        return fecha;
+      };
+      const desde = parseFechaLocal(desdeStr, false);
+      const hasta  = parseFechaLocal(hastaStr, true);
       filtered = ciberTrabajos.filter(t => {
         const f = t.fecha?.toDate();
         if (!f) return false;
@@ -2147,24 +2162,33 @@
     const movs=seccion==='dulces'?cajasDulces:cajasCiber;
     const hoy=new Date();hoy.setHours(0,0,0,0);
     const movsHoy=movs.filter(m=>m.fecha?.toDate()>=hoy);
+
+    // Ventas brutas del día (lo que entró a la caja)
     const totalHoy=seccion==='dulces'
       ?ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0)
       :ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+
+    // Ganancia REAL (precio de venta menos costo del producto)
+    const gananciaReal=seccion==='dulces'
+      ?ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.gananciaTotal||0),0)
+      :ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.gananciaTotal||0),0);
+
     const inicioPrimero=movsHoy.filter(m=>m.turnoInicio>0)[0]?.turnoInicio||0;
     const totalEgresos=movsHoy.filter(m=>m.tipo==='egreso').reduce((a,m)=>a+(m.monto||0),0);
     const totalGastos=movsHoy.filter(m=>m.tipo==='gasto_caja').reduce((a,m)=>a+(m.monto||0),0);
     const totalIngresos=movsHoy.filter(m=>m.tipo==='ingreso').reduce((a,m)=>a+(m.monto||0),0);
     const dineroFinal=inicioPrimero+totalHoy+totalIngresos-totalEgresos-totalGastos;
-    const ganancia=totalHoy-totalGastos-totalEgresos+totalIngresos;
+    // Ganancia neta = ganancia real de productos - gastos operativos del día
+    const gananciaNeta=gananciaReal-totalGastos-totalEgresos+totalIngresos;
     const esOwner=currentUser?.email===OWNER_EMAIL;
     const contR=document.getElementById(`caja-resumen-${seccion}`);
     if(contR)contR.innerHTML=`
       <div class="dash-grid" style="margin-bottom:14px">
         <div class="dash-card accent"><div class="dash-label">💵 Ventas del día</div><div class="dash-value green">$${totalHoy.toFixed(2)}</div></div>
         <div class="dash-card"><div class="dash-label">🏁 Inicio turno</div><div class="dash-value">$${inicioPrimero.toFixed(2)}</div></div>
-        <div class="dash-card"><div class="dash-label">💵 Dinero final turno</div><div class="dash-value">$${dineroFinal.toFixed(2)}</div></div>
-        <div class="dash-card"><div class="dash-label">📈 Ganancia turno</div><div class="dash-value green">$${ganancia.toFixed(2)}</div></div>
-        ${totalEgresos||totalGastos?`<div class="dash-card" style="grid-column:1/-1"><div class="dash-label">🔻 Descuentos / Gastos</div><div class="dash-value orange">-$${(totalEgresos+totalGastos).toFixed(2)}</div></div>`:''}
+        <div class="dash-card"><div class="dash-label">💰 Dinero final turno</div><div class="dash-value">$${dineroFinal.toFixed(2)}</div></div>
+        <div class="dash-card"><div class="dash-label">📈 Ganancia real</div><div class="dash-value green">$${gananciaNeta.toFixed(2)}</div><div class="dash-sub" style="font-size:.65rem;color:var(--muted)">Venta − costo producto</div></div>
+        ${totalEgresos||totalGastos?`<div class="dash-card" style="grid-column:1/-1"><div class="dash-label">🔻 Egresos / Gastos del día</div><div class="dash-value orange">-$${(totalEgresos+totalGastos).toFixed(2)}</div></div>`:''}
       </div>`;
     const contH=document.getElementById(`caja-hist-${seccion}`);
     if(contH){
