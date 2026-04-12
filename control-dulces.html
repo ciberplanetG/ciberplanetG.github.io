@@ -976,23 +976,42 @@
     document.getElementById('tab-' + tab).classList.add('active');
     document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
     if (tab !== 'agregar') scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
-    if (tab !== 'ventas')  scannerVentas.stop({ containerId:'camera-container-venta', btnId:'btn-camara-venta' });
+    if (tab !== 'agregar' && tab !== 'ventas') scannerVentas.stop({ containerId:'camera-container-venta', btnId:'btn-camara-venta' });
     if (tab === 'stock')     renderStock();
     if (tab === 'ventas')    renderVentas();
     if (tab === 'dashboard') renderDashboard();
     if (tab === 'ciber')     renderCiber();
     if (tab === 'cajas')     renderCajas();
-    // Conectar búsqueda de ventas cuando se activa la pestaña
-    if (tab === 'ventas') {
+    if (tab === 'agregar') {
+      // Inicializar subtabs Dulces — mostrar ventas por defecto
+      setDulcesVista(_dulcesVista || 'ventas');
+      renderVentas();
       const vs = document.getElementById('ventas-search');
       if (vs && !vs._wired) { vs._wired = true; vs.addEventListener('input', renderVentas); }
       const vf = document.getElementById('ventas-filtro');
-      if (vf && !vf._wired) { vf._wired = true; vf.addEventListener('change', renderVentas); }
+      if (vf && !vf._wired) { vf._wired = true; vf.addEventListener('change', () => {
+        const v = vf.value;
+        document.getElementById('ventas-custom-fechas').style.display = v==='custom' ? 'flex' : 'none';
+        renderVentas();
+      }); }
     }
     if (tab === 'ciber') {
       const cf = document.getElementById('ciber-filtro');
       if (cf && !cf._wired) { cf._wired = true; cf.addEventListener('change', renderCiberTrabajos); }
     }
+  };
+
+  let _dulcesVista = 'ventas';
+  window.setDulcesVista = (vista) => {
+    _dulcesVista = vista;
+    ['ventas','agregar','stock'].forEach(v => {
+      const panel = document.getElementById('dulces-panel-' + v);
+      const tab   = document.getElementById('dulces-tab-' + v);
+      if (panel) panel.style.display = vista === v ? 'block' : 'none';
+      if (tab)   tab.classList.toggle('ciber-tab-active', vista === v);
+    });
+    if (vista === 'stock') renderStock();
+    if (vista === 'ventas') renderVentas();
   };
 
   // ── PRODUCTOS — colección COMPARTIDA (sin filtro por usuario) ──────
@@ -1345,24 +1364,30 @@
     const top = Object.entries(pp).sort((a,b)=>b[1].total-a[1].total).slice(0,5);
 
     cont.innerHTML = `
-      <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">🍬 Dulces</div>
-      <div class="dash-grid">
-        <div class="dash-card accent">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">🍬 Dulces</div>
+        <button onclick="toggleSoloGanancia()" id="btn-solo-ganancia"
+          style="font-size:.72rem;font-family:'DM Sans',sans-serif;background:rgba(61,220,132,.12);border:1px solid rgba(61,220,132,.3);color:var(--green);border-radius:20px;padding:4px 12px;cursor:pointer">
+          👁 Solo ganancia
+        </button>
+      </div>
+      <div class="dash-grid" id="dash-cards-dulces">
+        <div class="dash-card accent dash-card-ventas">
           <div class="dash-label">Ventas del día</div>
           <div class="dash-value">$${tv.toFixed(2)}</div>
           <div class="dash-sub">${nv} transacciones</div>
         </div>
-        <div class="dash-card">
+        <div class="dash-card dash-card-ganancia">
           <div class="dash-label">Ganancia neta</div>
           <div class="dash-value green">$${tg.toFixed(2)}</div>
           <div class="dash-sub">Costo: $${tc.toFixed(2)}</div>
         </div>
-        <div class="dash-card">
+        <div class="dash-card dash-card-debes">
           <div class="dash-label">Debes pendientes</div>
           <div class="dash-value orange">$${td.toFixed(2)}</div>
           <div class="dash-sub">${nd} registros</div>
         </div>
-        <div class="dash-card">
+        <div class="dash-card dash-card-stock">
           <div class="dash-label">Productos en stock</div>
           <div class="dash-value">${productos.length}</div>
           <div class="dash-sub">${productos.filter(p=>p.stock<=5).length} stock bajo</div>
@@ -1395,6 +1420,59 @@
     // Renderizar gráfica después de insertar el HTML
     setTimeout(() => renderGraficaVentas(), 50);
   }
+
+  let _soloGanancia = false;
+  window.toggleSoloGanancia = () => {
+    _soloGanancia = !_soloGanancia;
+    const btn = document.getElementById('btn-solo-ganancia');
+    const cards = {
+      ventas: document.querySelector('.dash-card-ventas'),
+      debes:  document.querySelector('.dash-card-debes'),
+      stock:  document.querySelector('.dash-card-stock'),
+      ganancia: document.querySelector('.dash-card-ganancia'),
+    };
+    if (_soloGanancia) {
+      if (cards.ventas) cards.ventas.style.display = 'none';
+      if (cards.debes)  cards.debes.style.display  = 'none';
+      if (cards.stock)  cards.stock.style.display  = 'none';
+      if (cards.ganancia) { cards.ganancia.style.gridColumn = '1/-1'; }
+      if (btn) { btn.textContent = '👁 Ver todo'; btn.style.background = 'rgba(245,200,66,.15)'; btn.style.borderColor = 'rgba(245,200,66,.4)'; btn.style.color = 'var(--accent)'; }
+    } else {
+      if (cards.ventas) cards.ventas.style.display = '';
+      if (cards.debes)  cards.debes.style.display  = '';
+      if (cards.stock)  cards.stock.style.display  = '';
+      if (cards.ganancia) { cards.ganancia.style.gridColumn = ''; }
+      if (btn) { btn.textContent = '👁 Solo ganancia'; btn.style.background = 'rgba(61,220,132,.12)'; btn.style.borderColor = 'rgba(61,220,132,.3)'; btn.style.color = 'var(--green)'; }
+    }
+  };
+
+  window.exportarGraficaExcel = () => {
+    const desde = document.getElementById('grafica-desde')?.value;
+    const hasta  = document.getElementById('grafica-hasta')?.value;
+    const hastaD = hasta ? new Date(hasta + 'T23:59:59') : new Date();
+    const desdeD = desde ? new Date(desde + 'T00:00:00') : new Date(hastaD);
+    if (!desde) desdeD.setDate(hastaD.getDate() - 29);
+
+    const dias = [];
+    const cur = new Date(desdeD); cur.setHours(0,0,0,0);
+    const fin = new Date(hastaD); fin.setHours(0,0,0,0);
+    while (cur <= fin) { dias.push(new Date(cur)); cur.setDate(cur.getDate()+1); }
+
+    const wb = XLSX.utils.book_new();
+    const data = [['Fecha','Ventas Dulces ($)','Ventas Ciber ($)','Total ($)']];
+    let totalDulces=0, totalCiber=0;
+    dias.forEach(d => {
+      const sig = new Date(d); sig.setDate(sig.getDate()+1);
+      const vD = ventas.filter(v=>{const f=v.fecha?.toDate();return f>=d&&f<sig&&v.tipo==='venta';}).reduce((a,v)=>a+(v.total||0),0);
+      const vC = ciberTrabajos.filter(t=>{const f=t.fecha?.toDate();return f>=d&&f<sig&&t.tipo==='cobrado';}).reduce((a,t)=>a+(t.total||0),0);
+      totalDulces+=vD; totalCiber+=vC;
+      data.push([d.toLocaleDateString('es-MX'), vD.toFixed(2), vC.toFixed(2), (vD+vC).toFixed(2)]);
+    });
+    data.push([],['TOTAL', totalDulces.toFixed(2), totalCiber.toFixed(2), (totalDulces+totalCiber).toFixed(2)]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(data), 'Gráfica ventas');
+    XLSX.writeFile(wb, `grafica-ventas-${new Date().toLocaleDateString('es-MX').replace(/\//g,'-')}.xlsx`);
+    showToast('Excel de gráfica descargado ✓');
+  };
 
   // ── GRÁFICA DE VENTAS 30 DÍAS ─────────────────────────────────────
   let _graficaChart = null;
@@ -2883,7 +2961,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .btn-icon.btn-danger:hover{border-color:var(--red);color:var(--red)}
 
 /* VENTAS */
-.filtro-select{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;margin-bottom:14px;width:100%;font-family:'DM Sans',sans-serif}
+.filtro-select{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;margin-bottom:14px;width:100%;font-family:'DM Sans',sans-serif;-webkit-appearance:none;-moz-appearance:none;appearance:none}
+/* Quitar flechas ▼ de TODOS los selects */
+select{-webkit-appearance:none;-moz-appearance:none;appearance:none}
 .periodo-resumen{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}
 .periodo-item{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 10px;display:flex;flex-direction:column;align-items:center;gap:3px;text-align:center}
 .periodo-label{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
@@ -3071,6 +3151,8 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
             style="background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:.82rem;padding:9px 16px;border:none;border-radius:10px;cursor:pointer;white-space:nowrap">🔍 Ver</button>
           <button onclick="document.getElementById('grafica-desde').value='';document.getElementById('grafica-hasta').value='';renderGraficaVentas()"
             style="background:var(--surface2);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:.82rem;padding:9px 14px;border:1px solid var(--border);border-radius:10px;cursor:pointer;white-space:nowrap">↺ 30 días</button>
+          <button onclick="exportarGraficaExcel()"
+            style="background:rgba(61,220,132,.1);color:var(--green);font-family:'Syne',sans-serif;font-weight:700;font-size:.82rem;padding:9px 14px;border:1px solid rgba(61,220,132,.35);border-radius:10px;cursor:pointer;white-space:nowrap">📥 Excel</button>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;height:220px;position:relative">
           <canvas id="grafica-canvas"></canvas>
@@ -3079,244 +3161,227 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
     </div>
 
     <!-- AGREGAR -->
+    <!-- DULCES — tab unificado con subtabs -->
     <div class="tab-content" id="tab-agregar">
-      <div class="page-title">📦 Agregar producto</div>
-
-      <!-- Escáner siempre visible arriba -->
-      <div class="card">
-        <div class="card-title">📷 Buscar por código de barras</div>
-        <div class="scanner-section">
-          <div class="scan-btn-row">
-            <button class="btn-scan" id="btn-camara" onclick="toggleCamera()">📷 Escanear con cámara</button>
-            <button class="btn-scan" onclick="activarLector()">🔫 Lector físico</button>
-          </div>
-          <div id="camera-container">
-            <video id="video-preview" autoplay playsinline muted></video>
-            <canvas id="overlay-camera-container" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;border-radius:12px;"></canvas>
-            <div class="camera-overlay">
-              <div class="camera-frame">
-                <div class="corner-tr"></div>
-                <div class="corner-bl"></div>
-                <div class="scan-line"></div>
-              </div>
-            </div>
-            <div class="cam-controls">
-              <button class="btn-flash" id="btn-flash-camera-container"
-                onclick="_scannerAgregar.toggleFlash()">🔦 Flash</button>
-              <button class="btn-foto" id="btn-foto-agregar"
-                onclick="_scannerAgregar.capturarYAnalizar('video-preview','foto-prev-agregar','foto-stat-agregar', codigoAgregarDetectado)">📸 Capturar</button>
-              <span class="cam-tip">Acerca el código al recuadro</span>
-            </div>
-          </div>
-          <!-- Preview foto análisis -->
-          <div class="foto-wrap" id="foto-wrap-agregar">
-            <canvas class="foto-preview" id="foto-prev-agregar"></canvas>
-            <div class="foto-status" id="foto-stat-agregar"></div>
-          </div>
-          <div class="scan-result" id="scan-result-text"></div>
-        </div>
-        <input class="scanner-hidden-input" id="scanner-hidden"
-          onkeydown="onScannerKey(event)" autocomplete="off" tabindex="-1"/>
-        <input type="text" id="p-codigo" placeholder="O escribe el código manualmente..."
-          style="margin-top:10px;width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;color:var(--text);font-size:.94rem;outline:none;font-family:'DM Sans',sans-serif;"
-          oninput="verificarExistencia()"/>
+      <div class="page-title">🍬 CiberPlanet — Dulces</div>
+      <div class="ciber-tabs">
+        <button id="dulces-tab-ventas"   class="ciber-tab ciber-tab-active" onclick="setDulcesVista('ventas')">💰 Ventas</button>
+        <button id="dulces-tab-agregar"  class="ciber-tab" onclick="setDulcesVista('agregar')">➕ Agregar</button>
+        <button id="dulces-tab-stock"    class="ciber-tab" onclick="setDulcesVista('stock')">🏪 Stock</button>
       </div>
 
-      <!-- MODO: Producto YA existe -->
-      <div id="form-producto-existente" class="card existente-card" style="display:none">
-        <div class="existente-header">
-          <span class="existente-icon">✅</span>
-          <div>
-            <div class="existente-titulo">Producto encontrado</div>
-            <div class="existente-nombre" id="encontrado-nombre"></div>
-          </div>
-        </div>
-        <div class="existente-info">
-          <div class="existente-dato"><span>Código</span><b id="encontrado-codigo"></b></div>
-          <div class="existente-dato"><span>Stock actual</span><b id="encontrado-stock" class="green"></b> pzas</div>
-          <div class="existente-dato"><span>Precio venta</span><b id="encontrado-precio"></b></div>
-        </div>
-        <div class="form-group" style="margin-top:14px">
-          <label>¿Cuántas piezas nuevas vas a agregar?</label>
-          <input type="number" id="p-piezas-extra" placeholder="Ej: 25" min="1" inputmode="numeric"
-            style="background:var(--surface2);border:1px solid var(--accent);border-radius:10px;padding:13px 14px;color:var(--text);font-size:1.1rem;outline:none;width:100%;text-align:center;font-family:'DM Sans',sans-serif;font-weight:700;"
-            onkeydown="if(event.key==='Enter') confirmarAgregarStock()"/>
-        </div>
-        <div style="display:flex;gap:10px;margin-top:10px">
-          <button class="btn-cancelar-existente" onclick="cancelarExistente()">Cancelar</button>
-          <button class="btn-primary" style="margin-top:0;flex:2" onclick="confirmarAgregarStock()">+ Sumar al stock</button>
-        </div>
-      </div>
-
-      <!-- MODO: Producto NUEVO -->
-      <div id="form-nuevo-producto" class="card">
-        <div class="card-title">Nuevo producto</div>
-        <div class="form-grid">
-
-          <!-- Nombre -->
-          <div class="form-group form-full">
-            <label>Nombre del producto *</label>
-            <input type="text" id="p-nombre" placeholder="Ej: Pulparindo" oninput="verificarExistencia()"/>
-          </div>
-
-          <!-- Toggle lote / pieza -->
-          <div class="form-group form-full">
-            <label>¿Cómo compraste este producto?</label>
-            <div class="modo-toggle">
-              <button id="modo-lote" class="modo-btn modo-active">
-                📦 Por lote
-              </button>
-              <button id="modo-pieza" class="modo-btn">
-                🏷 Por pieza
-              </button>
-            </div>
-            <div class="modo-hint" id="modo-hint-lote">
-              Pagaste un precio por todo el paquete. Ej: $50 por 25 dulces → te calcula el costo por pieza.
-            </div>
-            <div class="modo-hint" id="modo-hint-pieza" style="display:none">
-              Sabes cuánto te costó cada pieza. Ej: cada dulce te costó $2.00.
-            </div>
-          </div>
-
-          <!-- Campo de costo (label cambia según modo) -->
-          <div class="form-group">
-            <label id="lbl-costo">Costo total del lote ($) *</label>
-            <input type="number" id="p-costo-total" placeholder="50.00"
-              step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
-          </div>
-
-          <!-- Piezas del lote (solo visible en modo lote) -->
-          <div class="form-group" id="fila-lote">
-            <label>Piezas en el lote *</label>
-            <input type="number" id="p-piezas" placeholder="25"
-              min="1" inputmode="numeric" oninput="calcCostoPieza()"/>
-          </div>
-          <!-- Espacio vacío en modo pieza para mantener grid -->
-          <div id="fila-pieza" style="display:none"></div>
-
-          <!-- Precio de venta -->
-          <div class="form-group">
-            <label>Precio de venta/pza ($) *</label>
-            <input type="number" id="p-precio-venta" placeholder="3.00"
-              step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
-          </div>
-
-          <!-- Stock inicial -->
-          <div class="form-group">
-            <label>Stock inicial (pzas) *</label>
-            <input type="number" id="p-stock" placeholder="25"
-              min="0" inputmode="numeric" oninput="calcCostoPieza()"/>
-          </div>
-
-          <!-- Preview ganancia -->
-          <div class="form-group form-full">
-            <div class="preview-text" id="costo-pieza-preview"></div>
-          </div>
-        </div>
-        <button class="btn-primary" onclick="agregarProducto()">+ Guardar producto nuevo</button>
-      </div>
-    </div>
-
-    <!-- STOCK -->
-    <div class="tab-content" id="tab-stock">
-      <div class="page-title">🏪 Stock actual</div>
-      <input class="search-bar" id="stock-search" placeholder="🔍 Buscar producto o código..."/>
-      <div id="stock-list"><div class="empty-state">Cargando...</div></div>
-    </div>
-
-    <!-- VENTAS -->
-    <div class="tab-content" id="tab-ventas">
-      <div class="page-title">💰 Registrar venta</div>
-      <div class="card">
-        <div class="card-title">Nueva transacción</div>
-        <div class="form-grid">
-          <div class="form-group form-full">
-            <label>Buscar por código de barras</label>
-            <div class="scanner-section">
-              <div class="scan-btn-row">
-                <button class="btn-scan" id="btn-camara-venta" onclick="toggleVentaCamera()">📷 Escanear con cámara</button>
-                <button class="btn-scan" onclick="activarLectorVenta()">🔫 Lector físico</button>
-              </div>
-              <div id="camera-container-venta">
-                <video id="video-preview-venta" autoplay playsinline muted></video>
-                <canvas id="overlay-camera-container-venta" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;border-radius:12px;"></canvas>
-                <div class="camera-overlay">
-                  <div class="camera-frame">
-                    <div class="corner-tr"></div>
-                    <div class="corner-bl"></div>
-                    <div class="scan-line"></div>
+      <!-- ── PANEL VENTAS ── -->
+      <div id="dulces-panel-ventas">
+        <div class="card">
+          <div class="card-title">Nueva transacción</div>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Buscar por código de barras</label>
+              <div class="scanner-section">
+                <div class="scan-btn-row">
+                  <button class="btn-scan" id="btn-camara-venta" onclick="toggleVentaCamera()">📷 Escanear con cámara</button>
+                  <button class="btn-scan" onclick="activarLectorVenta()">🔫 Lector físico</button>
+                </div>
+                <div id="camera-container-venta">
+                  <video id="video-preview-venta" autoplay playsinline muted></video>
+                  <canvas id="overlay-camera-container-venta" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;border-radius:12px;"></canvas>
+                  <div class="camera-overlay">
+                    <div class="camera-frame">
+                      <div class="corner-tr"></div>
+                      <div class="corner-bl"></div>
+                      <div class="scan-line"></div>
+                    </div>
+                  </div>
+                  <div class="cam-controls">
+                    <button class="btn-flash" id="btn-flash-camera-container-venta"
+                      onclick="_scannerVentas.toggleFlash()">🔦 Flash</button>
+                    <button class="btn-foto" id="btn-foto-venta"
+                      onclick="_scannerVentas.capturarYAnalizar('video-preview-venta','foto-prev-venta','foto-stat-venta', codigoVentaDetectado)">📸 Capturar</button>
+                    <span class="cam-tip">Acerca el código al recuadro</span>
                   </div>
                 </div>
-                <div class="cam-controls">
-                  <button class="btn-flash" id="btn-flash-camera-container-venta"
-                    onclick="_scannerVentas.toggleFlash()">🔦 Flash</button>
-                  <button class="btn-foto" id="btn-foto-venta"
-                    onclick="_scannerVentas.capturarYAnalizar('video-preview-venta','foto-prev-venta','foto-stat-venta', codigoVentaDetectado)">📸 Capturar</button>
-                  <span class="cam-tip">Acerca el código al recuadro</span>
+                <div class="foto-wrap" id="foto-wrap-venta">
+                  <canvas class="foto-preview" id="foto-prev-venta"></canvas>
+                  <div class="foto-status" id="foto-stat-venta"></div>
+                </div>
+                <div class="scan-result" id="scan-result-venta"></div>
+              </div>
+              <input class="scanner-hidden-input" id="scanner-hidden-venta"
+                onkeydown="onVentaScannerKey(event)" autocomplete="off" tabindex="-1"/>
+            </div>
+            <div class="form-group form-full">
+              <label>Producto</label>
+              <select id="venta-producto" onchange="onProductoChange()">
+                <option value="">— Selecciona producto —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Cantidad</label>
+              <input type="number" id="venta-cantidad" value="1" min="1" inputmode="numeric"/>
+            </div>
+            <div class="form-group">
+              <label>Precio unitario ($)</label>
+              <input type="number" id="venta-precio" placeholder="Auto" step="0.01" readonly style="opacity:.6"/>
+            </div>
+            <div class="form-group form-full">
+              <label>Tipo</label>
+              <select id="venta-tipo">
+                <option value="venta">✅ Venta — pago en efectivo</option>
+                <option value="debe">💳 Debe — pago pendiente</option>
+              </select>
+            </div>
+            <div class="form-group form-full">
+              <label>Nombre del cliente (recomendado para debes)</label>
+              <input type="text" id="venta-cliente" placeholder="Ej: Juan García"/>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="registrarVenta()">Registrar</button>
+        </div>
+        <div class="page-title" style="margin-top:18px">Historial</div>
+        <select class="filtro-select" id="ventas-filtro">
+          <option value="hoy">📅 Hoy</option>
+          <option value="semana">📆 Últimos 7 días</option>
+          <option value="mes">🗓 Últimos 30 días</option>
+          <option value="todo">📋 Todo el historial</option>
+          <option value="custom">🗓 Fechas personalizadas</option>
+        </select>
+        <div id="ventas-custom-fechas" style="display:none;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:130px">
+            <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Desde</label>
+            <input type="date" id="ventas-fecha-desde" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          </div>
+          <div style="flex:1;min-width:130px">
+            <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
+            <input type="date" id="ventas-fecha-hasta" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          </div>
+          <div style="width:100%">
+            <button onclick="window.renderVentas()" style="width:100%;background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:.88rem;padding:11px;border:none;border-radius:10px;cursor:pointer">🔍 Buscar en estas fechas</button>
+          </div>
+        </div>
+        <input class="search-bar" id="ventas-search" placeholder="🔍 Buscar por producto o cliente..." style="margin-top:8px"/>
+        <div id="ventas-list"><div class="empty-state">Cargando...</div></div>
+      </div>
+
+      <!-- ── PANEL AGREGAR ── -->
+      <div id="dulces-panel-agregar" style="display:none">
+        <div class="card">
+          <div class="card-title">📷 Buscar por código de barras</div>
+          <div class="scanner-section">
+            <div class="scan-btn-row">
+              <button class="btn-scan" id="btn-camara" onclick="toggleCamera()">📷 Escanear con cámara</button>
+              <button class="btn-scan" onclick="activarLector()">🔫 Lector físico</button>
+            </div>
+            <div id="camera-container">
+              <video id="video-preview" autoplay playsinline muted></video>
+              <canvas id="overlay-camera-container" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;border-radius:12px;"></canvas>
+              <div class="camera-overlay">
+                <div class="camera-frame">
+                  <div class="corner-tr"></div>
+                  <div class="corner-bl"></div>
+                  <div class="scan-line"></div>
                 </div>
               </div>
-              <!-- Preview foto análisis -->
-              <div class="foto-wrap" id="foto-wrap-venta">
-                <canvas class="foto-preview" id="foto-prev-venta"></canvas>
-                <div class="foto-status" id="foto-stat-venta"></div>
+              <div class="cam-controls">
+                <button class="btn-flash" id="btn-flash-camera-container"
+                  onclick="_scannerAgregar.toggleFlash()">🔦 Flash</button>
+                <button class="btn-foto" id="btn-foto-agregar"
+                  onclick="_scannerAgregar.capturarYAnalizar('video-preview','foto-prev-agregar','foto-stat-agregar', codigoAgregarDetectado)">📸 Capturar</button>
+                <span class="cam-tip">Acerca el código al recuadro</span>
               </div>
-              <div class="scan-result" id="scan-result-venta"></div>
             </div>
-            <input class="scanner-hidden-input" id="scanner-hidden-venta"
-              onkeydown="onVentaScannerKey(event)" autocomplete="off" tabindex="-1"/>
+            <div class="foto-wrap" id="foto-wrap-agregar">
+              <canvas class="foto-preview" id="foto-prev-agregar"></canvas>
+              <div class="foto-status" id="foto-stat-agregar"></div>
+            </div>
+            <div class="scan-result" id="scan-result-text"></div>
           </div>
-          <div class="form-group form-full">
-            <label>Producto</label>
-            <select id="venta-producto" onchange="onProductoChange()">
-              <option value="">— Selecciona producto —</option>
-            </select>
+          <input class="scanner-hidden-input" id="scanner-hidden"
+            onkeydown="onScannerKey(event)" autocomplete="off" tabindex="-1"/>
+          <input type="text" id="p-codigo" placeholder="O escribe el código manualmente..."
+            style="margin-top:10px;width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;color:var(--text);font-size:.94rem;outline:none;font-family:'DM Sans',sans-serif;"
+            oninput="verificarExistencia()"/>
+        </div>
+
+        <div id="form-producto-existente" class="card existente-card" style="display:none">
+          <div class="existente-header">
+            <span class="existente-icon">✅</span>
+            <div>
+              <div class="existente-titulo">Producto encontrado</div>
+              <div class="existente-nombre" id="encontrado-nombre"></div>
+            </div>
           </div>
-          <div class="form-group">
-            <label>Cantidad</label>
-            <input type="number" id="venta-cantidad" value="1" min="1" inputmode="numeric"/>
+          <div class="existente-info">
+            <div class="existente-dato"><span>Código</span><b id="encontrado-codigo"></b></div>
+            <div class="existente-dato"><span>Stock actual</span><b id="encontrado-stock" class="green"></b> pzas</div>
+            <div class="existente-dato"><span>Precio venta</span><b id="encontrado-precio"></b></div>
           </div>
-          <div class="form-group">
-            <label>Precio unitario ($)</label>
-            <input type="number" id="venta-precio" placeholder="Auto" step="0.01" readonly style="opacity:.6"/>
+          <div class="form-group" style="margin-top:14px">
+            <label>¿Cuántas piezas nuevas vas a agregar?</label>
+            <input type="number" id="p-piezas-extra" placeholder="Ej: 25" min="1" inputmode="numeric"
+              style="background:var(--surface2);border:1px solid var(--accent);border-radius:10px;padding:13px 14px;color:var(--text);font-size:1.1rem;outline:none;width:100%;text-align:center;font-family:'DM Sans',sans-serif;font-weight:700;"
+              onkeydown="if(event.key==='Enter') confirmarAgregarStock()"/>
           </div>
-          <div class="form-group form-full">
-            <label>Tipo</label>
-            <select id="venta-tipo">
-              <option value="venta">✅ Venta — pago en efectivo</option>
-              <option value="debe">💳 Debe — pago pendiente</option>
-            </select>
-          </div>
-          <div class="form-group form-full">
-            <label>Nombre del cliente (recomendado para debes)</label>
-            <input type="text" id="venta-cliente" placeholder="Ej: Juan García"/>
+          <div style="display:flex;gap:10px;margin-top:10px">
+            <button class="btn-cancelar-existente" onclick="cancelarExistente()">Cancelar</button>
+            <button class="btn-primary" style="margin-top:0;flex:2" onclick="confirmarAgregarStock()">+ Sumar al stock</button>
           </div>
         </div>
-        <button class="btn-primary" onclick="registrarVenta()">Registrar</button>
+
+        <div id="form-nuevo-producto" class="card">
+          <div class="card-title">Nuevo producto</div>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Nombre del producto *</label>
+              <input type="text" id="p-nombre" placeholder="Ej: Pulparindo" oninput="verificarExistencia()"/>
+            </div>
+            <div class="form-group form-full">
+              <label>¿Cómo compraste este producto?</label>
+              <div class="modo-toggle">
+                <button id="modo-lote" class="modo-btn modo-active">📦 Por lote</button>
+                <button id="modo-pieza" class="modo-btn">🏷 Por pieza</button>
+              </div>
+              <div class="modo-hint" id="modo-hint-lote">
+                Pagaste un precio por todo el paquete. Ej: $50 por 25 dulces → te calcula el costo por pieza.
+              </div>
+              <div class="modo-hint" id="modo-hint-pieza" style="display:none">
+                Sabes cuánto te costó cada pieza. Ej: cada dulce te costó $2.00.
+              </div>
+            </div>
+            <div class="form-group">
+              <label id="lbl-costo">Costo total del lote ($) *</label>
+              <input type="number" id="p-costo-total" placeholder="50.00" step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
+            </div>
+            <div class="form-group" id="fila-lote">
+              <label>Piezas en el lote *</label>
+              <input type="number" id="p-piezas" placeholder="25" min="1" inputmode="numeric" oninput="calcCostoPieza()"/>
+            </div>
+            <div id="fila-pieza" style="display:none"></div>
+            <div class="form-group">
+              <label>Precio de venta/pza ($) *</label>
+              <input type="number" id="p-precio-venta" placeholder="3.00" step="0.01" inputmode="decimal" oninput="calcCostoPieza()"/>
+            </div>
+            <div class="form-group">
+              <label>Stock inicial (pzas) *</label>
+              <input type="number" id="p-stock" placeholder="25" min="0" inputmode="numeric" oninput="calcCostoPieza()"/>
+            </div>
+            <div class="form-group form-full">
+              <div class="preview-text" id="costo-pieza-preview"></div>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="agregarProducto()">+ Guardar producto nuevo</button>
+        </div>
       </div>
-      <div class="page-title" style="margin-top:18px">Historial</div>
-      <select class="filtro-select" id="ventas-filtro">
-        <option value="hoy">📅 Hoy</option>
-        <option value="semana">📆 Últimos 7 días</option>
-        <option value="mes">🗓 Últimos 30 días</option>
-        <option value="todo">📋 Todo el historial</option>
-        <option value="custom">🗓 Fechas personalizadas</option>
-      </select>
-      <div id="ventas-custom-fechas" style="display:none;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-        <div style="flex:1;min-width:130px">
-          <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Desde</label>
-          <input type="date" id="ventas-fecha-desde" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
-        </div>
-        <div style="flex:1;min-width:130px">
-          <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
-          <input type="date" id="ventas-fecha-hasta" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
-        </div>
-        <div style="width:100%">
-          <button onclick="window.renderVentas()" style="width:100%;background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:.88rem;padding:11px;border:none;border-radius:10px;cursor:pointer">🔍 Buscar en estas fechas</button>
-        </div>
+
+      <!-- ── PANEL STOCK ── -->
+      <div id="dulces-panel-stock" style="display:none">
+        <input class="search-bar" id="stock-search" placeholder="🔍 Buscar producto o código..."/>
+        <div id="stock-list"><div class="empty-state">Cargando...</div></div>
       </div>
-      <input class="search-bar" id="ventas-search" placeholder="🔍 Buscar por producto o cliente..." style="margin-top:8px"/>
-      <div id="ventas-list"><div class="empty-state">Cargando...</div></div>
     </div>
+
+    <!-- tab-ventas y tab-stock ahora son alias redirigidos -->
+    <div class="tab-content" id="tab-ventas" style="display:none"></div>
+    <div class="tab-content" id="tab-stock" style="display:none"></div>
 
     <!-- ══════════════════════════════════════════
          CIBER TAB
@@ -3673,13 +3738,7 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
       <span class="icon">📊</span>Resumen
     </button>
     <button class="nav-btn" data-tab="agregar" onclick="showTab('agregar')">
-      <span class="icon">➕</span>Producto
-    </button>
-    <button class="nav-btn" data-tab="stock" onclick="showTab('stock')">
-      <span class="icon">🏪</span>Stock
-    </button>
-    <button class="nav-btn" data-tab="ventas" onclick="showTab('ventas')">
-      <span class="icon">💰</span>Dulces
+      <span class="icon">🍬</span>Dulces
     </button>
     <button class="nav-btn" data-tab="ciber" onclick="showTab('ciber')">
       <span class="icon">🖥️</span>Ciber
