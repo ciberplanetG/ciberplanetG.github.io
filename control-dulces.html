@@ -2246,46 +2246,18 @@
   // ── CONTEO DE CAJA ────────────────────────────────────────────────
   window.calcConteo = (seccion) => {
     const p = seccion === 'dulces' ? 'cd' : 'cc';
-    const monedas = [
-      { id: `${p}-m10`,   val: 10,   sub: `${p}-sub-m10`   },
-      { id: `${p}-m5`,    val: 5,    sub: `${p}-sub-m5`    },
-      { id: `${p}-m2`,    val: 2,    sub: `${p}-sub-m2`    },
-      { id: `${p}-m1`,    val: 1,    sub: `${p}-sub-m1`    },
-      { id: `${p}-m050`,  val: 0.5,  sub: `${p}-sub-m050`  },
-    ];
-    const billetes = [
-      { id: `${p}-b1000`, val: 1000, sub: `${p}-sub-b1000` },
-      { id: `${p}-b500`,  val: 500,  sub: `${p}-sub-b500`  },
-      { id: `${p}-b200`,  val: 200,  sub: `${p}-sub-b200`  },
-      { id: `${p}-b100`,  val: 100,  sub: `${p}-sub-b100`  },
-      { id: `${p}-b50`,   val: 50,   sub: `${p}-sub-b50`   },
-      { id: `${p}-b20`,   val: 20,   sub: `${p}-sub-b20`   },
-    ];
-    let sumM = 0, sumB = 0;
-    monedas.forEach(m => {
-      const qty = parseFloat(document.getElementById(m.id)?.value)||0;
-      const subtotal = qty * m.val;
-      sumM += subtotal;
-      const subEl = document.getElementById(m.sub);
-      if (subEl) subEl.textContent = subtotal > 0 ? `$${subtotal % 1 === 0 ? subtotal : subtotal.toFixed(2)}` : '';
-    });
-    billetes.forEach(b => {
-      const qty = parseFloat(document.getElementById(b.id)?.value)||0;
-      const subtotal = qty * b.val;
-      sumB += subtotal;
-      const subEl = document.getElementById(b.sub);
-      if (subEl) subEl.textContent = subtotal > 0 ? `$${subtotal}` : '';
-    });
+    const monedaIds  = [`${p}-m10`,`${p}-m5`,`${p}-m2`,`${p}-m1`,`${p}-m050`];
+    const billeteIds = [`${p}-b1000`,`${p}-b500`,`${p}-b200`,`${p}-b100`,`${p}-b50`,`${p}-b20`];
+    // Suma directa — el usuario escribe el total en pesos, sin multiplicar
+    const sumM = monedaIds.reduce((a,id)  => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
+    const sumB = billeteIds.reduce((a,id) => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
     const totalCaja = sumM + sumB;
     document.getElementById(`${p}-total-monedas`).textContent = `Total monedas: $${sumM.toFixed(2)}`;
     document.getElementById(`${p}-total-billetes`).textContent = `Total billetes: $${sumB.toFixed(2)}`;
 
-    // Sumar cofre al total de ciber
-    let totalCofre = 0;
-    if (seccion === 'ciber' && _cofreData.ciber) {
-      const c = _cofreData.ciber;
-      totalCofre = (c.m10||0) + (c.m5||0) + (c.m2||0) + (c.m1||0) + (c.m050||0);
-    }
+    // Cofre — se suma al total para AMBAS secciones (el cofre no se gasta, siempre se acumula)
+    const c = _cofreData[seccion];
+    const totalCofre = c ? (c.m10||0)+(c.m5||0)+(c.m2||0)+(c.m1||0)+(c.m050||0) : 0;
     const totalConCofre = totalCaja + totalCofre;
     const hoy = new Date(); hoy.setHours(0,0,0,0);
     const ventasHoy = seccion === 'dulces'
@@ -2298,7 +2270,7 @@
     const resDiv = document.getElementById(`${p}-resultado`);
     if (resDiv) {
       resDiv.style.display = 'block';
-      document.getElementById(`${p}-stat-total`).textContent = seccion==='ciber' && totalCofre>0
+      document.getElementById(`${p}-stat-total`).textContent = totalCofre > 0
         ? `$${totalCaja.toFixed(2)} + $${totalCofre.toFixed(2)} cofre = $${totalConCofre.toFixed(2)}`
         : `$${totalConCofre.toFixed(2)}`;
       document.getElementById(`${p}-stat-ventas`).textContent = `$${ventasHoy.toFixed(2)}`;
@@ -2337,11 +2309,11 @@
     const d = _cofreData[sec];
     if (!d) { cont.innerHTML = '<div class="empty-state" style="padding:12px 0;font-size:.83rem">Sin datos</div>'; return; }
     const filas = [
-      { label:'M10',    amt: d.m10||0  },
-      { label:'M5',     amt: d.m5||0   },
-      { label:'M2',     amt: d.m2||0   },
-      { label:'M1',     amt: d.m1||0   },
-      { label:'M0.50',  amt: d.m050||0 },
+      { label:'M10',   amt: d.m10||0  },
+      { label:'M5',    amt: d.m5||0   },
+      { label:'M2',    amt: d.m2||0   },
+      { label:'M1',    amt: d.m1||0   },
+      { label:'M0.50', amt: d.m050||0 },
     ];
     const total = filas.reduce((a,f)=>a+f.amt, 0);
     cont.innerHTML = `
@@ -2349,7 +2321,7 @@
         ${filas.map(f=>`
           <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center">
             <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">${f.label}</div>
-            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem;color:var(--accent)">$${f.amt>0?f.amt.toFixed(2):'-'}</div>
+            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem;color:var(--accent)">${f.amt>0?'$'+f.amt.toFixed(2):'-'}</div>
           </div>`).join('')}
         <div style="background:rgba(120,80,255,.1);border:1px solid rgba(120,80,255,.4);border-radius:8px;padding:8px;text-align:center;grid-column:span 3">
           <div style="font-size:.65rem;color:#a78bfa;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Total cofre</div>
@@ -2398,8 +2370,8 @@
   }
 
   window.calcCofreEditTotal = () => {
-    const ids = ['m10','m5','m2','m1','m050'];
-    const total = ids.reduce((a,k)=> a + (parseFloat(document.getElementById(`cofre-edit-${k}`)?.value)||0), 0);
+    const total = ['m10','m5','m2','m1','m050'].reduce((a,k)=>
+      a + (parseFloat(document.getElementById(`cofre-edit-${k}`)?.value)||0), 0);
     const el = document.getElementById('cofre-edit-total');
     if (el) el.textContent = `$${total.toFixed(2)}`;
   };
@@ -2424,24 +2396,13 @@
 
   window.registrarCierreCaja = async (seccion) => {
     const p = seccion === 'dulces' ? 'cd' : 'cc';
-    const monedas = [
-      { id: `${p}-m10`,   val: 10   },
-      { id: `${p}-m5`,    val: 5    },
-      { id: `${p}-m2`,    val: 2    },
-      { id: `${p}-m1`,    val: 1    },
-      { id: `${p}-m050`,  val: 0.5  },
-    ];
-    const billetes = [
-      { id: `${p}-b1000`, val: 1000 },
-      { id: `${p}-b500`,  val: 500  },
-      { id: `${p}-b200`,  val: 200  },
-      { id: `${p}-b100`,  val: 100  },
-      { id: `${p}-b50`,   val: 50   },
-      { id: `${p}-b20`,   val: 20   },
-    ];
-    const sumM = monedas.reduce((a,m) => a + (parseFloat(document.getElementById(m.id)?.value)||0) * m.val, 0);
-    const sumB = billetes.reduce((a,b) => a + (parseFloat(document.getElementById(b.id)?.value)||0) * b.val, 0);
-    const totalCaja = sumM + sumB;
+    const monedaIds  = [`${p}-m10`,`${p}-m5`,`${p}-m2`,`${p}-m1`,`${p}-m050`];
+    const billeteIds = [`${p}-b1000`,`${p}-b500`,`${p}-b200`,`${p}-b100`,`${p}-b50`,`${p}-b20`];
+    const sumM = monedaIds.reduce((a,id)  => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
+    const sumB = billeteIds.reduce((a,id) => a + (parseFloat(document.getElementById(id)?.value)||0), 0);
+    const c = _cofreData[seccion];
+    const totalCofre = c ? (c.m10||0)+(c.m5||0)+(c.m2||0)+(c.m1||0)+(c.m050||0) : 0;
+    const totalCaja = sumM + sumB + totalCofre;
     const inicio = parseFloat(document.getElementById(`caja-${seccion}-inicio`)?.value)||0;
     if (!inicio && !totalCaja) { showToast('Llena el conteo primero','error'); return; }
     const hoy = new Date(); hoy.setHours(0,0,0,0);
@@ -3160,22 +3121,22 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
           <!-- Monedas -->
           <div>
             <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas (cuántas piezas)</div>
-            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cd-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m10">$0</span></div>
-            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cd-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m5">$0</span></div>
-            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cd-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m2">$0</span></div>
-            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cd-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m1">$0</span></div>
-            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cd-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m050">$0</span></div>
+            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cd-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cd-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cd-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cd-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cd-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
             <div class="conteo-total" id="cd-total-monedas">Total monedas: $0.00</div>
           </div>
           <!-- Billetes -->
           <div>
             <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes (cuántos piezas)</div>
-            <div class="conteo-row"><span>$1000</span><input type="number" id="cd-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b1000">$0</span></div>
-            <div class="conteo-row"><span>$500</span><input type="number" id="cd-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b500">$0</span></div>
-            <div class="conteo-row"><span>$200</span><input type="number" id="cd-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b200">$0</span></div>
-            <div class="conteo-row"><span>$100</span><input type="number" id="cd-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b100">$0</span></div>
-            <div class="conteo-row"><span>$50</span><input type="number" id="cd-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b50">$0</span></div>
-            <div class="conteo-row"><span>$20</span><input type="number" id="cd-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b20">$0</span></div>
+            <div class="conteo-row"><span>$1000</span><input type="number" id="cd-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$500</span><input type="number" id="cd-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$200</span><input type="number" id="cd-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$100</span><input type="number" id="cd-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$50</span><input type="number" id="cd-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$20</span><input type="number" id="cd-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
             <div class="conteo-total" id="cd-total-billetes">Total billetes: $0.00</div>
           </div>
         </div>
@@ -3240,21 +3201,21 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
             <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas (cuántas piezas)</div>
-            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cc-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m10">$0</span></div>
-            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cc-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m5">$0</span></div>
-            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cc-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m2">$0</span></div>
-            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cc-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m1">$0</span></div>
-            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cc-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m050">$0</span></div>
+            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cc-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cc-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cc-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cc-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cc-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
             <div class="conteo-total" id="cc-total-monedas">Total monedas: $0.00</div>
           </div>
           <div>
             <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes (cuántos piezas)</div>
-            <div class="conteo-row"><span>$1000</span><input type="number" id="cc-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b1000">$0</span></div>
-            <div class="conteo-row"><span>$500</span><input type="number" id="cc-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b500">$0</span></div>
-            <div class="conteo-row"><span>$200</span><input type="number" id="cc-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b200">$0</span></div>
-            <div class="conteo-row"><span>$100</span><input type="number" id="cc-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b100">$0</span></div>
-            <div class="conteo-row"><span>$50</span><input type="number" id="cc-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b50">$0</span></div>
-            <div class="conteo-row"><span>$20</span><input type="number" id="cc-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b20">$0</span></div>
+            <div class="conteo-row"><span>$1000</span><input type="number" id="cc-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$500</span><input type="number" id="cc-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$200</span><input type="number" id="cc-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$100</span><input type="number" id="cc-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$50</span><input type="number" id="cc-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$20</span><input type="number" id="cc-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
             <div class="conteo-total" id="cc-total-billetes">Total billetes: $0.00</div>
           </div>
         </div>
