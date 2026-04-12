@@ -2264,17 +2264,11 @@
     let sumM = 0, sumB = 0;
     monedas.forEach(m => {
       const qty = parseFloat(document.getElementById(m.id)?.value)||0;
-      const subtotal = qty * m.val;
-      sumM += subtotal;
-      const subEl = document.getElementById(m.sub);
-      if (subEl) subEl.textContent = subtotal > 0 ? `$${subtotal % 1 === 0 ? subtotal : subtotal.toFixed(2)}` : '';
+      sumM += qty * m.val;
     });
     billetes.forEach(b => {
       const qty = parseFloat(document.getElementById(b.id)?.value)||0;
-      const subtotal = qty * b.val;
-      sumB += subtotal;
-      const subEl = document.getElementById(b.sub);
-      if (subEl) subEl.textContent = subtotal > 0 ? `$${subtotal}` : '';
+      sumB += qty * b.val;
     });
     const totalCaja = sumM + sumB;
     document.getElementById(`${p}-total-monedas`).textContent = `Total monedas: $${sumM.toFixed(2)}`;
@@ -3161,22 +3155,22 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <!-- Monedas -->
           <div>
             <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas (cuántas piezas)</div>
-            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cd-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m10">$0</span></div>
-            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cd-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m5">$0</span></div>
-            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cd-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m2">$0</span></div>
-            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cd-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m1">$0</span></div>
-            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cd-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-m050">$0</span></div>
+            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cd-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cd-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cd-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cd-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cd-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
             <div class="conteo-total" id="cd-total-monedas">Total monedas: $0.00</div>
           </div>
           <!-- Billetes -->
           <div>
             <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes (cuántos piezas)</div>
-            <div class="conteo-row"><span>$1000</span><input type="number" id="cd-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b1000">$0</span></div>
-            <div class="conteo-row"><span>$500</span><input type="number" id="cd-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b500">$0</span></div>
-            <div class="conteo-row"><span>$200</span><input type="number" id="cd-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b200">$0</span></div>
-            <div class="conteo-row"><span>$100</span><input type="number" id="cd-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b100">$0</span></div>
-            <div class="conteo-row"><span>$50</span><input type="number" id="cd-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b50">$0</span></div>
-            <div class="conteo-row"><span>$20</span><input type="number" id="cd-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/><span class="conteo-sub" id="cd-sub-b20">$0</span></div>
+            <div class="conteo-row"><span>$1000</span><input type="number" id="cd-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$500</span><input type="number" id="cd-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$200</span><input type="number" id="cd-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$100</span><input type="number" id="cd-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$50</span><input type="number" id="cd-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
+            <div class="conteo-row"><span>$20</span><input type="number" id="cd-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('dulces')"/></div>
             <div class="conteo-total" id="cd-total-billetes">Total billetes: $0.00</div>
           </div>
         </div>
@@ -3241,21 +3235,21 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
             <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">🪙 Monedas (cuántas piezas)</div>
-            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cc-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m10">$0</span></div>
-            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cc-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m5">$0</span></div>
-            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cc-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m2">$0</span></div>
-            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cc-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m1">$0</span></div>
-            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cc-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-m050">$0</span></div>
+            <div class="conteo-row"><span>$10 c/u</span><input type="number" id="cc-m10" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$5 c/u</span><input type="number" id="cc-m5" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$2 c/u</span><input type="number" id="cc-m2" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$1 c/u</span><input type="number" id="cc-m1" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$0.50 c/u</span><input type="number" id="cc-m050" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
             <div class="conteo-total" id="cc-total-monedas">Total monedas: $0.00</div>
           </div>
           <div>
             <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;font-weight:700">💵 Billetes (cuántos piezas)</div>
-            <div class="conteo-row"><span>$1000</span><input type="number" id="cc-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b1000">$0</span></div>
-            <div class="conteo-row"><span>$500</span><input type="number" id="cc-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b500">$0</span></div>
-            <div class="conteo-row"><span>$200</span><input type="number" id="cc-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b200">$0</span></div>
-            <div class="conteo-row"><span>$100</span><input type="number" id="cc-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b100">$0</span></div>
-            <div class="conteo-row"><span>$50</span><input type="number" id="cc-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b50">$0</span></div>
-            <div class="conteo-row"><span>$20</span><input type="number" id="cc-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/><span class="conteo-sub" id="cc-sub-b20">$0</span></div>
+            <div class="conteo-row"><span>$1000</span><input type="number" id="cc-b1000" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$500</span><input type="number" id="cc-b500" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$200</span><input type="number" id="cc-b200" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$100</span><input type="number" id="cc-b100" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$50</span><input type="number" id="cc-b50" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
+            <div class="conteo-row"><span>$20</span><input type="number" id="cc-b20" class="conteo-inp" value="0" min="0" inputmode="numeric" oninput="calcConteo('ciber')"/></div>
             <div class="conteo-total" id="cc-total-billetes">Total billetes: $0.00</div>
           </div>
         </div>
