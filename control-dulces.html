@@ -2211,21 +2211,37 @@
 
   setTimeout(()=>{
     document.getElementById('stock-search')?.addEventListener('input', renderStock);
-    // Filtros ventas
+
+    // Filtro ventas — select
     document.getElementById('ventas-filtro')?.addEventListener('change', e => {
-      document.getElementById('ventas-custom-fechas').style.display = e.target.value==='custom'?'flex':'none';
+      const v = e.target.value;
+      document.getElementById('ventas-custom-fechas').style.display = v==='custom' ? 'flex' : 'none';
       window.renderVentas();
     });
-    document.getElementById('ventas-fecha-desde')?.addEventListener('change', () => window.renderVentas());
-    document.getElementById('ventas-fecha-hasta')?.addEventListener('change', () => window.renderVentas());
-    // Filtros ciber
+    // Fechas ventas — usar TANTO change como input para máxima compatibilidad
+    ['ventas-fecha-desde','ventas-fecha-hasta'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', () => window.renderVentas());
+      el.addEventListener('input',  () => window.renderVentas());
+      el.addEventListener('blur',   () => window.renderVentas());
+    });
+
+    // Filtro ciber — select
     document.getElementById('ciber-filtro')?.addEventListener('change', e => {
-      document.getElementById('ciber-custom-fechas').style.display = e.target.value==='custom'?'flex':'none';
+      const v = e.target.value;
+      document.getElementById('ciber-custom-fechas').style.display = v==='custom' ? 'flex' : 'none';
       window.renderCiberTrabajos();
     });
-    document.getElementById('ciber-fecha-desde')?.addEventListener('change', () => window.renderCiberTrabajos());
-    document.getElementById('ciber-fecha-hasta')?.addEventListener('change', () => window.renderCiberTrabajos());
-  }, 600);
+    // Fechas ciber
+    ['ciber-fecha-desde','ciber-fecha-hasta'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', () => window.renderCiberTrabajos());
+      el.addEventListener('input',  () => window.renderCiberTrabajos());
+      el.addEventListener('blur',   () => window.renderCiberTrabajos());
+    });
+  }, 800);
 
   // ── CONTEO DE CAJA ────────────────────────────────────────────────
   window.calcConteo = (seccion) => {
@@ -2992,6 +3008,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
           <input type="date" id="ventas-fecha-hasta" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
         </div>
+        <div style="width:100%">
+          <button onclick="window.renderVentas()" style="width:100%;background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:.88rem;padding:11px;border:none;border-radius:10px;cursor:pointer">🔍 Buscar en estas fechas</button>
+        </div>
       </div>
       <input class="search-bar" id="ventas-search" placeholder="🔍 Buscar por producto o cliente..." style="margin-top:8px"/>
       <div id="ventas-list"><div class="empty-state">Cargando...</div></div>
@@ -3063,6 +3082,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <div style="flex:1;min-width:130px">
             <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
             <input type="date" id="ciber-fecha-hasta" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif"/>
+          </div>
+          <div style="width:100%">
+            <button onclick="window.renderCiberTrabajos()" style="width:100%;background:var(--accent);color:#000;font-family:'Syne',sans-serif;font-weight:700;font-size:.88rem;padding:11px;border:none;border-radius:10px;cursor:pointer">🔍 Buscar en estas fechas</button>
           </div>
         </div>
         <div id="ciber-trabajos-list"><div class="empty-state">Cargando...</div></div>
