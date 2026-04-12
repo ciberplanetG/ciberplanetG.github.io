@@ -924,10 +924,15 @@
       document.getElementById('login-screen').style.display = 'none';
       document.getElementById('app-screen').style.display   = 'flex';
       document.getElementById('user-email').textContent = user.email;
+      // Ocultar pestaña Servicios para alberto
+      const tabServicios = document.getElementById('ciber-tab-servicios');
+      if (tabServicios) tabServicios.style.display = user.email === ALBERTO_EMAIL ? 'none' : '';
       loadProductos();
       loadVentas();
       loadCiberServicios();
       loadCiberTrabajos();
+      loadReparaciones();
+      loadCajas();
     } else {
       currentUser = null;
       scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
@@ -965,6 +970,7 @@
     if (tab === 'ventas')    renderVentas();
     if (tab === 'dashboard') renderDashboard();
     if (tab === 'ciber')     renderCiber();
+    if (tab === 'cajas')     renderCajas();
     // Conectar búsqueda de ventas cuando se activa la pestaña
     if (tab === 'ventas') {
       const vs = document.getElementById('ventas-search');
@@ -1215,10 +1221,21 @@
     const filtro   = document.getElementById('ventas-filtro')?.value || 'hoy';
     const busqueda = (document.getElementById('ventas-search')?.value || '').toLowerCase().trim();
     const hoy    = new Date(); hoy.setHours(0,0,0,0);
+
+    // Mostrar/ocultar selector de fechas custom
+    const customWrap = document.getElementById('ventas-custom-fechas');
+    if (customWrap) customWrap.style.display = filtro==='custom' ? 'flex' : 'none';
+
     let filtered = ventas;
     if (filtro==='hoy')    filtered = ventas.filter(v => v.fecha?.toDate() >= hoy);
     if (filtro==='semana') { const s=new Date(hoy); s.setDate(s.getDate()-7); filtered=ventas.filter(v=>v.fecha?.toDate()>=s); }
     if (filtro==='mes')    { const m=new Date(hoy); m.setDate(m.getDate()-30); filtered=ventas.filter(v=>v.fecha?.toDate()>=m); }
+    if (filtro==='custom') {
+      const desde = document.getElementById('ventas-fecha-desde')?.value;
+      const hasta = document.getElementById('ventas-fecha-hasta')?.value;
+      if (desde) { const d=new Date(desde+'T00:00:00'); filtered=ventas.filter(v=>v.fecha?.toDate()>=d); }
+      if (hasta) { const h=new Date(hasta+'T23:59:59'); filtered=filtered.filter(v=>v.fecha?.toDate()<=h); }
+    }
     // Filtro por nombre de producto o cliente
     if (busqueda) filtered = filtered.filter(v =>
       (v.productoNombre||'').toLowerCase().includes(busqueda) ||
@@ -1238,6 +1255,17 @@
     const nVentas = filtered.filter(v=>v.tipo==='venta').length;
     const nDebes  = filtered.filter(v=>v.tipo==='debe').length;
 
+    // Historial por producto (top 5)
+    const byProd = {};
+    filtered.forEach(v => {
+      const k = v.productoNombre||'?';
+      if (!byProd[k]) byProd[k]={cant:0,total:0,ganancia:0};
+      byProd[k].cant     += v.cantidad||1;
+      byProd[k].total    += v.total||0;
+      byProd[k].ganancia += v.gananciaTotal||0;
+    });
+    const topProds = Object.entries(byProd).sort((a,b)=>b[1].total-a[1].total).slice(0,5);
+
     cont.innerHTML = `
       <div class="periodo-resumen">
         <div class="periodo-item">
@@ -1255,12 +1283,16 @@
           <span class="periodo-val green">$${totalGanancia.toFixed(2)}</span>
           <span class="periodo-sub">${filtered.length} total</span>
         </div>
-      </div>` +
+      </div>
+      ${topProds.length>=1?`<div class="top-section" style="margin-bottom:14px">
+        <div class="section-title">📦 Ventas por producto</div>
+        ${topProds.map(([n,d])=>`<div class="top-row"><span>${n}</span><span><b style="color:var(--green)">$${d.total.toFixed(2)}</b> · ${d.cant} pzas</span></div>`).join('')}
+        ${Object.keys(byProd).length>5?`<div style="font-size:.73rem;color:var(--muted);margin-top:6px;text-align:center">+ ${Object.keys(byProd).length-5} productos más</div>`:''}
+      </div>`:''}` +
     filtered.map(v => {
       const f = v.fecha?.toDate();
       const fs= f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
-      const esOwner = currentUser && currentUser.email === OWNER_EMAIL;
-      const btnDel  = esOwner ? `<button class="btn-del-venta" onclick="solicitarEliminarVenta('${v.id}','${v.productoNombre.replace(/'/g,"\\'")}')">🗑</button>` : '';
+      const btnDel  = `<button class="btn-del-venta" onclick="solicitarEliminarVenta('${v.id}','${(v.productoNombre||'').replace(/'/g,"\\'")}')">🗑</button>`;
       return `<div class="venta-card ${v.tipo==='debe'?'venta-debe':''}">
         <div class="venta-header">
           <span class="venta-nombre">${v.productoNombre}</span>
@@ -1275,7 +1307,7 @@
           <span class="ganancia">Ganancia: $${(v.gananciaTotal||0).toFixed(2)}</span>
         </div>
         ${v.cliente?`<div class="venta-cliente">👤 ${v.cliente}</div>`:''}
-        <div class="venta-footer">${fs} · ${v.vendedor}</div>
+        <div class="venta-footer">${fs} · ${v.vendedor||''}</div>
       </div>`;
     }).join('');
   }
@@ -1459,7 +1491,7 @@
   // ── ELIMINAR VENTA (solo dueño) ───────────────────────────────────
 
   window.solicitarEliminarVenta = (id, nombre) => {
-    if (!currentUser || currentUser.email !== OWNER_EMAIL) return;
+    if (!currentUser) return;
     // Guardamos el id a eliminar en el modal
     document.getElementById('pin-venta-id').value   = id;
     document.getElementById('pin-venta-nombre').textContent = nombre;
@@ -1514,14 +1546,19 @@
     }, err => console.error('ciber_trabajos:', err));
   }
 
+  const ALBERTO_EMAIL = 'alberto@gmail.com';
+
   window.setCiberVista = (vista) => {
     _ciberVista = vista;
     document.getElementById('ciber-panel-trabajos').style.display  = vista==='trabajos'  ? 'block':'none';
     document.getElementById('ciber-panel-servicios').style.display = vista==='servicios' ? 'block':'none';
+    document.getElementById('ciber-panel-reparaciones').style.display = vista==='reparaciones' ? 'block':'none';
     document.getElementById('ciber-tab-trabajos').classList.toggle('ciber-tab-active',  vista==='trabajos');
     document.getElementById('ciber-tab-servicios').classList.toggle('ciber-tab-active', vista==='servicios');
+    document.getElementById('ciber-tab-reparaciones').classList.toggle('ciber-tab-active', vista==='reparaciones');
     if (vista==='servicios') renderCiberListaServicios();
     if (vista==='trabajos')  { renderCiberTrabajos(); renderCiberResumenHoy(); }
+    if (vista==='reparaciones') renderReparaciones();
   };
 
   function renderCiber() {
@@ -1529,6 +1566,7 @@
     renderCiberTrabajos();
     renderCiberResumenHoy();
     renderCiberListaServicios();
+    renderReparaciones();
   }
 
   // ── Catálogo de servicios ──────────────────────────────────────────
@@ -1596,34 +1634,160 @@
 
   // ── Registro de trabajos ───────────────────────────────────────────
   window.onCiberServicioChange = () => {
-    const s   = ciberServicios.find(x=>x.id===document.getElementById('ct-servicio').value);
-    const pre = document.getElementById('ct-precio-preview');
-    if (s && pre) pre.textContent = `Precio: $${s.precioVenta.toFixed(2)} · Costo: $${s.costoUnitario.toFixed(2)} · Ganancia/u: $${s.ganancia.toFixed(2)}`;
-    else if (pre) pre.textContent = '';
+    const sid = document.getElementById('ct-servicio').value;
+    const esLibre = sid === '__libre__';
+    // Mostrar/ocultar campos de cobro libre
+    ['ct-libre-wrap','ct-libre-precio-wrap','ct-libre-costo-wrap'].forEach(id =>
+      document.getElementById(id).style.display = esLibre ? 'block' : 'none'
+    );
+    // Ocultar cantidad cuando es cobro libre (ya tiene precio directo)
+    document.getElementById('ct-cant-wrap').style.display = esLibre ? 'none' : 'block';
+    if (!esLibre) document.getElementById('ct-cantidad').value = '1';
+
+    // Autocompletar precios de impresión desde catálogo
+    const svcBN    = ciberServicios.find(x => /impresi[oó]n\s*(b[&y]?n|blanco)/i.test(x.nombre));
+    const svcColor = ciberServicios.find(x => /impresi[oó]n\s*color/i.test(x.nombre));
+    if (svcBN    && !document.getElementById('ct-precio-bn').value)
+      document.getElementById('ct-precio-bn').value = svcBN.precioVenta.toFixed(2);
+    if (svcColor && !document.getElementById('ct-precio-color').value)
+      document.getElementById('ct-precio-color').value = svcColor.precioVenta.toFixed(2);
+
+    calcCiberTotal();
+  };
+
+  window.calcCiberTotal = () => {
+    const sid      = document.getElementById('ct-servicio').value;
+    const esLibre  = sid === '__libre__';
+    const cant     = esLibre ? 1 : (parseInt(document.getElementById('ct-cantidad').value)||1);
+    const hojasBN  = parseInt(document.getElementById('ct-hojas-bn').value)||0;
+    const hojasCol = parseInt(document.getElementById('ct-hojas-color').value)||0;
+    const precioBN = parseFloat(document.getElementById('ct-precio-bn').value)||0;
+    const precioCol= parseFloat(document.getElementById('ct-precio-color').value)||0;
+
+    let basePrice = 0, baseCosto = 0, baseNombre = '';
+    if (esLibre) {
+      basePrice = parseFloat(document.getElementById('ct-libre-precio').value)||0;
+      baseCosto = parseFloat(document.getElementById('ct-libre-costo').value)||0;
+      baseNombre= document.getElementById('ct-libre-desc').value.trim() || 'Cobro libre';
+    } else if (sid) {
+      const s = ciberServicios.find(x=>x.id===sid);
+      if (s) { basePrice=s.precioVenta; baseCosto=s.costoUnitario; baseNombre=s.nombre; }
+    }
+
+    const totalServicio = basePrice * cant;
+    const costoServicio = baseCosto * cant;
+    const totalBN       = hojasBN  * precioBN;
+    const totalColor    = hojasCol * precioCol;
+    // Costo impresión: si existe en catálogo usamos su costo, si no asumimos 40% del precio
+    const svcBN    = ciberServicios.find(x=>/impresi[oó]n\s*(b[&y]?n|blanco)/i.test(x.nombre));
+    const svcColor = ciberServicios.find(x=>/impresi[oó]n\s*color/i.test(x.nombre));
+    const costoBN    = hojasBN  * (svcBN    ? svcBN.costoUnitario    : precioBN*0.4);
+    const costoColor = hojasCol * (svcColor ? svcColor.costoUnitario : precioCol*0.4);
+    const grandTotal  = totalServicio + totalBN + totalColor;
+    const grandCosto  = costoServicio + costoBN + costoColor;
+    const ganancia    = grandTotal - grandCosto;
+
+    const wrap = document.getElementById('ct-total-wrap');
+    const prev = document.getElementById('ct-total-preview');
+    if (!wrap || !prev) return;
+
+    const hayAlgo = grandTotal > 0 || hojasBN > 0 || hojasCol > 0;
+    wrap.style.display = hayAlgo ? 'block' : 'none';
+    if (!hayAlgo) return;
+
+    const filas = [];
+    if (totalServicio) filas.push(`<div class="ct-row"><span>${baseNombre}${cant>1?' ×'+cant:''}</span><span>$${totalServicio.toFixed(2)}</span></div>`);
+    if (hojasBN)       filas.push(`<div class="ct-row"><span>🖨️ B&N × ${hojasBN} hojas</span><span>$${totalBN.toFixed(2)}</span></div>`);
+    if (hojasCol)      filas.push(`<div class="ct-row"><span>🎨 Color × ${hojasCol} hojas</span><span>$${totalColor.toFixed(2)}</span></div>`);
+
+    prev.innerHTML = `
+      <div class="ct-rows">${filas.join('')}</div>
+      <div class="ct-total-line">
+        <span>Total a cobrar</span>
+        <span class="ct-total-num">$${grandTotal.toFixed(2)}</span>
+      </div>
+      <div class="ct-ganancia-line">Ganancia estimada: $${ganancia.toFixed(2)}</div>`;
   };
 
   window.registrarTrabajoCiber = async () => {
     const sid     = document.getElementById('ct-servicio').value;
-    const cant    = parseInt(document.getElementById('ct-cantidad').value)||1;
     const tipo    = document.getElementById('ct-tipo').value;
     const cliente = document.getElementById('ct-cliente').value.trim();
     const nota    = document.getElementById('ct-nota').value.trim();
+    const hojasBN = parseInt(document.getElementById('ct-hojas-bn').value)||0;
+    const hojasColor = parseInt(document.getElementById('ct-hojas-color').value)||0;
+    const precioBN   = parseFloat(document.getElementById('ct-precio-bn').value)||0;
+    const precioColor= parseFloat(document.getElementById('ct-precio-color').value)||0;
+
     if (!sid) { showToast('Selecciona un servicio','error'); return; }
-    const s = ciberServicios.find(x=>x.id===sid);
-    if (!s) return;
+
+    const esLibre = sid === '__libre__';
+    let servicioNombre, precioUnitario, costoUnitario, cantidad, servicioId;
+
+    if (esLibre) {
+      servicioNombre = document.getElementById('ct-libre-desc').value.trim() || 'Cobro libre';
+      precioUnitario = parseFloat(document.getElementById('ct-libre-precio').value)||0;
+      costoUnitario  = parseFloat(document.getElementById('ct-libre-costo').value)||0;
+      cantidad = 1;
+      servicioId = '__libre__';
+      if (!precioUnitario) { showToast('Escribe el monto a cobrar','error'); return; }
+    } else {
+      const s = ciberServicios.find(x=>x.id===sid);
+      if (!s) return;
+      servicioNombre = s.nombre;
+      precioUnitario = s.precioVenta;
+      costoUnitario  = s.costoUnitario;
+      cantidad = parseInt(document.getElementById('ct-cantidad').value)||1;
+      servicioId = sid;
+    }
+
+    const svcBN    = ciberServicios.find(x=>/impresi[oó]n\s*(b[&y]?n|blanco)/i.test(x.nombre));
+    const svcColor = ciberServicios.find(x=>/impresi[oó]n\s*color/i.test(x.nombre));
+
+    const totalServicio  = precioUnitario * cantidad;
+    const costoServicio  = costoUnitario  * cantidad;
+    const totalBN        = hojasBN   * precioBN;
+    const totalColor     = hojasColor * precioColor;
+    const costoBN        = hojasBN   * (svcBN    ? svcBN.costoUnitario    : precioBN*0.4);
+    const costoColorVal  = hojasColor * (svcColor ? svcColor.costoUnitario : precioColor*0.4);
+    const grandTotal     = totalServicio + totalBN + totalColor;
+    const grandCosto     = costoServicio + costoBN + costoColorVal;
+
+    // Construir nombre descriptivo
+    const partes = [servicioNombre];
+    if (hojasBN)    partes.push(`${hojasBN} hoja${hojasBN>1?'s':''} B&N`);
+    if (hojasColor) partes.push(`${hojasColor} hoja${hojasColor>1?'s':''} color`);
+    const nombreCompleto = partes.join(' + ');
+
     await addDoc(collection(db,'ciber_trabajos'), {
-      servicioId: sid, servicioNombre: s.nombre, categoria: s.categoria||'General',
-      cantidad: cant, precioUnitario: s.precioVenta, costoUnitario: s.costoUnitario,
-      total: s.precioVenta*cant, gananciaTotal: s.ganancia*cant,
-      costoTotal: s.costoUnitario*cant, tipo, cliente, nota,
+      servicioId, servicioNombre: nombreCompleto,
+      categoria: esLibre ? 'Libre' : (ciberServicios.find(x=>x.id===sid)?.categoria||'General'),
+      cantidad, precioUnitario, costoUnitario,
+      hojasBN, precioBN, totalBN,
+      hojasColor, precioColor, totalColor,
+      total: grandTotal, gananciaTotal: grandTotal - grandCosto,
+      costoTotal: grandCosto, tipo, cliente, nota,
       fecha: Timestamp.now(), vendedor: currentUser.email
     });
-    document.getElementById('ct-servicio').value  = '';
-    document.getElementById('ct-cantidad').value  = '1';
-    document.getElementById('ct-cliente').value   = '';
-    document.getElementById('ct-nota').value      = '';
-    document.getElementById('ct-tipo').value      = 'cobrado';
-    document.getElementById('ct-precio-preview').textContent = '';
+
+    // Resetear formulario
+    document.getElementById('ct-servicio').value     = '';
+    document.getElementById('ct-cantidad').value     = '1';
+    document.getElementById('ct-hojas-bn').value     = '0';
+    document.getElementById('ct-hojas-color').value  = '0';
+    document.getElementById('ct-precio-bn').value    = '';
+    document.getElementById('ct-precio-color').value = '';
+    document.getElementById('ct-cliente').value      = '';
+    document.getElementById('ct-nota').value         = '';
+    document.getElementById('ct-tipo').value         = 'cobrado';
+    document.getElementById('ct-libre-desc').value   = '';
+    document.getElementById('ct-libre-precio').value = '';
+    document.getElementById('ct-libre-costo').value  = '';
+    ['ct-libre-wrap','ct-libre-precio-wrap','ct-libre-costo-wrap'].forEach(id =>
+      document.getElementById(id).style.display = 'none');
+    document.getElementById('ct-cant-wrap').style.display = 'block';
+    document.getElementById('ct-total-wrap').style.display = 'none';
+
     showToast(tipo==='fiado'?`Fiado: ${cliente||'cliente'} ✓`:'Trabajo registrado ✓');
   };
 
@@ -1741,11 +1905,205 @@
     setTimeout(()=>t.classList.remove('show'), 3000);
   };
 
+  // ── REPARACIONES ─────────────────────────────────────────────────
+  let reparaciones = [];
+
+  function loadReparaciones() {
+    const q = query(collection(db, 'reparaciones'), orderBy('fecha','desc'));
+    onSnapshot(q, snap => {
+      reparaciones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderReparaciones();
+    }, err => console.error('reparaciones:', err));
+  }
+
+  window.guardarReparacion = async () => {
+    const nombre    = document.getElementById('rep-nombre').value.trim();
+    const correo    = document.getElementById('rep-correo').value.trim();
+    const numero    = document.getElementById('rep-numero').value.trim();
+    const marca     = document.getElementById('rep-marca').value.trim();
+    const error     = document.getElementById('rep-error').value.trim();
+    const accesorios= document.getElementById('rep-accesorios').value.trim();
+    if (!nombre || !marca || !error) { showToast('Llena al menos nombre, marca y error','error'); return; }
+    await addDoc(collection(db, 'reparaciones'), {
+      nombre, correo, numero, marca, error, accesorios,
+      estado: 'pendiente',
+      fecha: Timestamp.now(), registradoPor: currentUser.email
+    });
+    ['rep-nombre','rep-correo','rep-numero','rep-marca','rep-error','rep-accesorios'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+    showToast('Reparación registrada ✓');
+  };
+
+  window.eliminarReparacion = async (id) => {
+    if (currentUser?.email !== OWNER_EMAIL) { showToast('Solo el dueño puede eliminar','error'); return; }
+    if (!confirm('¿Eliminar esta reparación?')) return;
+    await deleteDoc(doc(db,'reparaciones',id));
+    showToast('Reparación eliminada');
+  };
+
+  window.cambiarEstadoRep = async (id, estado) => {
+    await updateDoc(doc(db,'reparaciones',id), { estado });
+    showToast('Estado actualizado ✓');
+  };
+
+  function renderReparaciones() {
+    const cont = document.getElementById('reparaciones-list');
+    if (!cont) return;
+    if (!reparaciones.length) { cont.innerHTML='<div class="empty-state">Sin reparaciones registradas</div>'; return; }
+    const esOwner = currentUser?.email===OWNER_EMAIL;
+    cont.innerHTML = reparaciones.map(r => {
+      const f = r.fecha?.toDate();
+      const fs = f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
+      const estadoColor = r.estado==='listo'?'badge-green':r.estado==='entregado'?'badge-blue':'badge-orange';
+      const estadoLabel = r.estado==='listo'?'✅ Listo':r.estado==='entregado'?'📦 Entregado':'⏳ Pendiente';
+      return `<div class="venta-card">
+        <div class="venta-header">
+          <span class="venta-nombre">🔧 ${r.marca}</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="venta-badge ${estadoColor}">${estadoLabel}</span>
+            ${esOwner?`<button class="btn-del-venta" onclick="eliminarReparacion('${r.id}')">🗑</button>`:''}
+          </div>
+        </div>
+        <div class="venta-info">
+          <span>👤 ${r.nombre}</span>
+          ${r.numero?`<span>📞 ${r.numero}</span>`:''}
+          ${r.correo?`<span>✉️ ${r.correo}</span>`:''}
+        </div>
+        <div style="font-size:.83rem;color:var(--text);margin:6px 0"><b>Error:</b> ${r.error}</div>
+        ${r.accesorios?`<div style="font-size:.8rem;color:var(--muted)">📎 Accesorios: ${r.accesorios}</div>`:''}
+        <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn-icon" style="font-size:.75rem;padding:5px 10px" onclick="cambiarEstadoRep('${r.id}','pendiente')">⏳ Pendiente</button>
+          <button class="btn-icon" style="font-size:.75rem;padding:5px 10px" onclick="cambiarEstadoRep('${r.id}','listo')">✅ Listo</button>
+          <button class="btn-icon" style="font-size:.75rem;padding:5px 10px" onclick="cambiarEstadoRep('${r.id}','entregado')">📦 Entregado</button>
+        </div>
+        <div class="venta-footer" style="margin-top:8px">${fs} · ${r.registradoPor||''}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── CAJAS ─────────────────────────────────────────────────────────
+  let cajasDulces = [];
+  let cajasCiber  = [];
+
+  function loadCajas() {
+    const qd = query(collection(db, 'caja_dulces'), orderBy('fecha','desc'));
+    onSnapshot(qd, snap => {
+      cajasDulces = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderCajas();
+    }, err => console.error('caja_dulces:', err));
+
+    const qc = query(collection(db, 'caja_ciber'), orderBy('fecha','desc'));
+    onSnapshot(qc, snap => {
+      cajasCiber = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderCajas();
+    }, err => console.error('caja_ciber:', err));
+  }
+
+  let _cajaVista = 'dulces'; // 'dulces' | 'ciber'
+
+  window.setCajaVista = (vista) => {
+    _cajaVista = vista;
+    document.getElementById('caja-panel-dulces').style.display = vista==='dulces'?'block':'none';
+    document.getElementById('caja-panel-ciber').style.display  = vista==='ciber'?'block':'none';
+    document.getElementById('caja-tab-dulces').classList.toggle('ciber-tab-active', vista==='dulces');
+    document.getElementById('caja-tab-ciber').classList.toggle('ciber-tab-active',  vista==='ciber');
+    renderCajas();
+  };
+
+  window.registrarMovCaja = async (seccion) => {
+    const tipo      = document.getElementById(`caja-${seccion}-tipo`).value;
+    const concepto  = document.getElementById(`caja-${seccion}-concepto`).value.trim();
+    const monto     = parseFloat(document.getElementById(`caja-${seccion}-monto`).value)||0;
+    const turnoInicio = parseFloat(document.getElementById(`caja-${seccion}-inicio`)?.value)||0;
+    if (!concepto || !monto) { showToast('Escribe concepto y monto','error'); return; }
+    const col = seccion==='dulces' ? 'caja_dulces' : 'caja_ciber';
+    await addDoc(collection(db, col), {
+      tipo, concepto, monto, turnoInicio,
+      fecha: Timestamp.now(), registradoPor: currentUser.email
+    });
+    ['concepto','monto','inicio'].forEach(f => { const el=document.getElementById(`caja-${seccion}-${f}`); if(el) el.value=''; });
+    showToast('Movimiento registrado ✓');
+  };
+
+  window.eliminarMovCaja = async (seccion, id) => {
+    if (currentUser?.email !== OWNER_EMAIL) { showToast('Solo el dueño puede eliminar','error'); return; }
+    if (!confirm('¿Eliminar este movimiento?')) return;
+    const col = seccion==='dulces' ? 'caja_dulces' : 'caja_ciber';
+    await deleteDoc(doc(db, col, id));
+    showToast('Movimiento eliminado');
+  };
+
+  function calcResumenCaja(movs, ventas_arr, ciber_arr, seccion) {
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const movsHoy = movs.filter(m => m.fecha?.toDate() >= hoy);
+    const totalHoy = seccion==='dulces'
+      ? ventas_arr.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0)
+      : ciber_arr.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    const inicioPrimero = movsHoy.filter(m=>m.turnoInicio>0)[0]?.turnoInicio || 0;
+    const totalIngresos = movsHoy.filter(m=>m.tipo==='ingreso').reduce((a,m)=>a+(m.monto||0),0);
+    const totalEgresos  = movsHoy.filter(m=>m.tipo==='egreso').reduce((a,m)=>a+(m.monto||0),0);
+    const totalGastos   = movsHoy.filter(m=>m.tipo==='gasto_caja').reduce((a,m)=>a+(m.monto||0),0);
+    const dineroFinal = inicioPrimero + totalHoy + totalIngresos - totalEgresos - totalGastos;
+    const ganancia    = totalHoy - totalGastos - totalEgresos + totalIngresos;
+    return { totalHoy, inicioPrimero, totalIngresos, totalEgresos, totalGastos, dineroFinal, ganancia };
+  }
+
+  function renderCajaPanel(seccion) {
+    const movs = seccion==='dulces' ? cajasDulces : cajasCiber;
+    const r = calcResumenCaja(movs, ventas, ciberTrabajos, seccion);
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const movsHoy = movs.filter(m=>m.fecha?.toDate()>=hoy);
+    const esOwner = currentUser?.email===OWNER_EMAIL;
+
+    const contResumen = document.getElementById(`caja-resumen-${seccion}`);
+    if (contResumen) {
+      contResumen.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+          <div class="dash-card"><div class="dash-label">💰 Ventas hoy</div><div class="dash-value green">$${r.totalHoy.toFixed(2)}</div></div>
+          <div class="dash-card"><div class="dash-label">🏁 Dinero inicio turno</div><div class="dash-value">$${r.inicioPrimero.toFixed(2)}</div></div>
+          <div class="dash-card accent"><div class="dash-label">💵 Dinero final turno</div><div class="dash-value">$${r.dineroFinal.toFixed(2)}</div></div>
+          <div class="dash-card"><div class="dash-label">📈 Ganancia turno</div><div class="dash-value green">$${r.ganancia.toFixed(2)}</div></div>
+          ${r.totalEgresos||r.totalGastos?`<div class="dash-card" style="grid-column:1/-1"><div class="dash-label">🔻 Descuentos/Gastos</div><div class="dash-value orange">-$${(r.totalEgresos+r.totalGastos).toFixed(2)}</div></div>`:''}
+        </div>`;
+    }
+
+    const contHist = document.getElementById(`caja-hist-${seccion}`);
+    if (contHist) {
+      if (!movsHoy.length) { contHist.innerHTML='<div class="empty-state">Sin movimientos hoy</div>'; return; }
+      contHist.innerHTML = movsHoy.map(m => {
+        const f=m.fecha?.toDate(); const fs=f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
+        const color = m.tipo==='egreso'||m.tipo==='gasto_caja'?'var(--red)':'var(--green)';
+        const sign  = m.tipo==='egreso'||m.tipo==='gasto_caja'?'-':'+';
+        const label = m.tipo==='egreso'?'🔻 Egreso':m.tipo==='gasto_caja'?'🛒 Gasto':m.tipo==='ingreso'?'💵 Ingreso':'📝';
+        return `<div class="venta-card">
+          <div class="venta-header">
+            <span class="venta-nombre">${m.concepto}</span>
+            <span style="font-family:Syne,sans-serif;font-weight:800;color:${color};font-size:1.05rem">${sign}$${(m.monto||0).toFixed(2)}</span>
+          </div>
+          <div class="venta-info"><span>${label}</span>${m.turnoInicio?`<span>Inicio turno: $${m.turnoInicio.toFixed(2)}</span>`:''}</div>
+          <div class="venta-footer" style="display:flex;justify-content:space-between">${fs} · ${m.registradoPor||''}
+            ${esOwner?`<button class="btn-del-venta" onclick="eliminarMovCaja('${seccion}','${m.id}')">🗑</button>`:''}
+          </div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  function renderCajas() {
+    renderCajaPanel('dulces');
+    renderCajaPanel('ciber');
+  }
+
   setTimeout(()=>{
     document.getElementById('stock-search')?.addEventListener('input', renderStock);
-    document.getElementById('ventas-filtro')?.addEventListener('change', renderVentas);
+    document.getElementById('ventas-filtro')?.addEventListener('change', () => {
+      renderVentas();
+      const filtro = document.getElementById('ventas-filtro')?.value;
+      const cw = document.getElementById('ventas-custom-fechas');
+      if (cw) cw.style.display = filtro==='custom'?'flex':'none';
+    });
+    document.getElementById('ventas-fecha-desde')?.addEventListener('change', renderVentas);
+    document.getElementById('ventas-fecha-hasta')?.addEventListener('change', renderVentas);
   }, 600);
-</script>
 
 <style>
 :root{--bg:#0f0f13;--surface:#1a1a22;--surface2:#22222e;--border:#2e2e3e;--accent:#f5c842;--green:#3ddc84;--orange:#ff9f43;--red:#ff4d6d;--blue:#4ecdc4;--text:#f0f0f5;--muted:#8888aa;--radius:14px}
@@ -1774,9 +2132,10 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .logout-btn:hover{border-color:var(--red);color:var(--red)}
 
 /* NAV */
-.bottom-nav{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);display:flex;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
-.nav-btn{flex:1;background:none;border:none;color:var(--muted);padding:10px 4px;font-size:.66rem;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;transition:color .2s;font-family:'DM Sans',sans-serif}
-.nav-btn .icon{font-size:1.3rem}
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);display:flex;overflow-x:auto;z-index:100;padding-bottom:env(safe-area-inset-bottom);scrollbar-width:none}
+.bottom-nav::-webkit-scrollbar{display:none}
+.nav-btn{flex:0 0 auto;min-width:60px;background:none;border:none;color:var(--muted);padding:10px 4px;font-size:.62rem;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;transition:color .2s;font-family:'DM Sans',sans-serif}
+.nav-btn .icon{font-size:1.2rem}
 .nav-btn.active{color:var(--accent)}
 
 /* CONTENT */
@@ -1925,6 +2284,12 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .ciber-serv-info{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}
 .ciber-serv-nombre{font-family:'Syne',sans-serif;font-weight:700;font-size:.92rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ciber-serv-nums{font-size:.76rem;color:var(--muted)}
+.ciber-total-card{background:var(--surface2);border:1px solid var(--accent);border-radius:12px;padding:14px;margin-top:4px}
+.ct-rows{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
+.ct-row{display:flex;justify-content:space-between;font-size:.85rem;color:var(--muted)}
+.ct-total-line{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);padding-top:10px;font-family:'Syne',sans-serif;font-weight:700}
+.ct-total-num{font-size:1.3rem;color:var(--accent)}
+.ct-ganancia-line{font-size:.75rem;color:var(--green);margin-top:5px;text-align:right}
 
 /* MISC */
 .empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:.87rem}
@@ -2244,7 +2609,18 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <option value="semana">📆 Últimos 7 días</option>
         <option value="mes">🗓 Últimos 30 días</option>
         <option value="todo">📋 Todo el historial</option>
+        <option value="custom">🗓 Fechas personalizadas</option>
       </select>
+      <div id="ventas-custom-fechas" style="display:none;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:130px">
+          <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Desde</label>
+          <input type="date" id="ventas-fecha-desde" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif" onchange="renderVentas()"/>
+        </div>
+        <div style="flex:1;min-width:130px">
+          <label style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Hasta</label>
+          <input type="date" id="ventas-fecha-hasta" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif" onchange="renderVentas()"/>
+        </div>
+      </div>
       <input class="search-bar" id="ventas-search" placeholder="🔍 Buscar por producto o cliente..." style="margin-top:8px"/>
       <div id="ventas-list"><div class="empty-state">Cargando...</div></div>
     </div>
@@ -2255,10 +2631,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     <div class="tab-content" id="tab-ciber">
       <div class="page-title">🖥️ CiberPlanet — Ciber</div>
 
-      <!-- Tabs internos: Trabajos / Servicios -->
+      <!-- Tabs internos: Trabajos / Servicios / Reparaciones -->
       <div class="ciber-tabs">
         <button id="ciber-tab-trabajos"  class="ciber-tab ciber-tab-active" onclick="setCiberVista('trabajos')">💼 Trabajos</button>
         <button id="ciber-tab-servicios" class="ciber-tab" onclick="setCiberVista('servicios')">⚙️ Servicios</button>
+        <button id="ciber-tab-reparaciones" class="ciber-tab" onclick="setCiberVista('reparaciones')">🔧 Reparaciones</button>
       </div>
 
       <!-- ── PANEL TRABAJOS ───────────────────── -->
@@ -2273,16 +2650,34 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div class="card">
           <div class="card-title">➕ Registrar trabajo</div>
           <div class="form-grid">
+
+            <!-- Servicio base -->
             <div class="form-group form-full">
               <label>Servicio *</label>
               <select id="ct-servicio" onchange="onCiberServicioChange()">
                 <option value="">— Selecciona servicio —</option>
+                <option value="__libre__">✏️ Cobro libre (escribe el monto)</option>
               </select>
-              <div class="preview-text" id="ct-precio-preview" style="margin-top:5px"></div>
             </div>
-            <div class="form-group">
+
+            <!-- Cobro libre -->
+            <div class="form-group form-full" id="ct-libre-wrap" style="display:none">
+              <label>Descripción del cobro *</label>
+              <input type="text" id="ct-libre-desc" placeholder="Ej: Buscar imágenes, Llenar formulario…" oninput="calcCiberTotal()"/>
+            </div>
+            <div class="form-group" id="ct-libre-precio-wrap" style="display:none">
+              <label>Monto a cobrar ($) *</label>
+              <input type="number" id="ct-libre-precio" placeholder="0.00" step="0.01" inputmode="decimal" oninput="calcCiberTotal()"/>
+            </div>
+            <div class="form-group" id="ct-libre-costo-wrap" style="display:none">
+              <label>Costo (opcional $)</label>
+              <input type="number" id="ct-libre-costo" placeholder="0.00" step="0.01" inputmode="decimal" oninput="calcCiberTotal()"/>
+            </div>
+
+            <!-- Cantidad y tipo -->
+            <div class="form-group" id="ct-cant-wrap">
               <label>Cantidad</label>
-              <input type="number" id="ct-cantidad" value="1" min="1" inputmode="numeric"/>
+              <input type="number" id="ct-cantidad" value="1" min="1" inputmode="numeric" oninput="calcCiberTotal()"/>
             </div>
             <div class="form-group">
               <label>Tipo</label>
@@ -2291,14 +2686,45 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
                 <option value="fiado">🤝 Fiado</option>
               </select>
             </div>
+
+            <!-- Separador impresiones -->
+            <div class="form-full" style="border-top:1px solid var(--border);margin:4px 0;padding-top:10px">
+              <span style="font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600">🖨️ Impresiones (opcional)</span>
+            </div>
+
+            <!-- B&N -->
+            <div class="form-group">
+              <label>Hojas B&N</label>
+              <input type="number" id="ct-hojas-bn" value="0" min="0" inputmode="numeric" oninput="calcCiberTotal()"/>
+            </div>
+            <div class="form-group">
+              <label>Precio/hoja B&N ($)</label>
+              <input type="number" id="ct-precio-bn" placeholder="2.00" step="0.01" inputmode="decimal" oninput="calcCiberTotal()"/>
+            </div>
+            <div class="form-group">
+              <label>Hojas Color</label>
+              <input type="number" id="ct-hojas-color" value="0" min="0" inputmode="numeric" oninput="calcCiberTotal()"/>
+            </div>
+            <div class="form-group">
+              <label>Precio/hoja Color ($)</label>
+              <input type="number" id="ct-precio-color" placeholder="5.00" step="0.01" inputmode="decimal" oninput="calcCiberTotal()"/>
+            </div>
+
+            <!-- Cliente y nota -->
             <div class="form-group form-full">
               <label>Cliente (opcional)</label>
               <input type="text" id="ct-cliente" placeholder="Ej: María López"/>
             </div>
             <div class="form-group form-full">
               <label>Nota / descripción (opcional)</label>
-              <input type="text" id="ct-nota" placeholder="Ej: Recibo de luz — 3 páginas color"/>
+              <input type="text" id="ct-nota" placeholder="Ej: Recibo de luz, 3 hojas color"/>
             </div>
+
+            <!-- Total en vivo -->
+            <div class="form-full" id="ct-total-wrap" style="display:none">
+              <div class="ciber-total-card" id="ct-total-preview"></div>
+            </div>
+
           </div>
           <button class="btn-primary" onclick="registrarTrabajoCiber()">Registrar trabajo</button>
         </div>
@@ -2345,6 +2771,127 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
         <div class="page-title" style="margin-top:18px">Catálogo de servicios</div>
         <div id="ciber-servicios-list"><div class="empty-state">Sin servicios aún — agrégalos arriba</div></div>
       </div>
+
+      <!-- ── PANEL REPARACIONES ──────────────────── -->
+      <div id="ciber-panel-reparaciones" style="display:none">
+        <div class="card">
+          <div class="card-title">🔧 Nueva reparación</div>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Nombre de la persona *</label>
+              <input type="text" id="rep-nombre" placeholder="Ej: Juan García"/>
+            </div>
+            <div class="form-group">
+              <label>Correo electrónico</label>
+              <input type="email" id="rep-correo" placeholder="juan@correo.com"/>
+            </div>
+            <div class="form-group">
+              <label>Número de teléfono</label>
+              <input type="tel" id="rep-numero" placeholder="443 000 0000" inputmode="tel"/>
+            </div>
+            <div class="form-group form-full">
+              <label>Marca del equipo *</label>
+              <input type="text" id="rep-marca" placeholder="Ej: HP, Lenovo, Samsung, Apple…"/>
+            </div>
+            <div class="form-group form-full">
+              <label>Error que presenta el equipo *</label>
+              <input type="text" id="rep-error" placeholder="Ej: No enciende, pantalla rota, teclado dañado…"/>
+            </div>
+            <div class="form-group form-full">
+              <label>Accesorios que deja la persona</label>
+              <input type="text" id="rep-accesorios" placeholder="Ej: Cargador, funda, mouse…"/>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="guardarReparacion()">💾 Registrar reparación</button>
+        </div>
+        <div class="page-title" style="margin-top:18px">Historial de reparaciones</div>
+        <div id="reparaciones-list"><div class="empty-state">Sin reparaciones registradas</div></div>
+      </div>
+    </div>
+
+  </div><!-- /content (ciber tab) -->
+
+    <!-- ══════════════════════════════════════════
+         CAJAS TAB
+    ══════════════════════════════════════════ -->
+    <div class="tab-content" id="tab-cajas">
+      <div class="page-title">🏦 Control de Cajas</div>
+
+      <!-- Tabs Dulces / Ciber -->
+      <div class="ciber-tabs">
+        <button id="caja-tab-dulces" class="ciber-tab ciber-tab-active" onclick="setCajaVista('dulces')">🍬 Dulces</button>
+        <button id="caja-tab-ciber"  class="ciber-tab" onclick="setCajaVista('ciber')">🖥️ Ciber</button>
+      </div>
+
+      <!-- ── PANEL CAJA DULCES ── -->
+      <div id="caja-panel-dulces">
+        <div id="caja-resumen-dulces" style="margin-bottom:14px"><div class="empty-state">Cargando...</div></div>
+
+        <div class="card">
+          <div class="card-title">➕ Registrar movimiento — Dulces</div>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Tipo de movimiento</label>
+              <select id="caja-dulces-tipo">
+                <option value="ingreso">💵 Ingreso (dinero que entra)</option>
+                <option value="egreso">🔻 Egreso (dinero que sale)</option>
+                <option value="gasto_caja">🛒 Gasto de caja (compra/gasto)</option>
+              </select>
+            </div>
+            <div class="form-group form-full">
+              <label>Concepto *</label>
+              <input type="text" id="caja-dulces-concepto" placeholder="Ej: Pago de proveedor, retiré para gas…"/>
+            </div>
+            <div class="form-group">
+              <label>Monto ($) *</label>
+              <input type="number" id="caja-dulces-monto" placeholder="0.00" step="0.01" inputmode="decimal"/>
+            </div>
+            <div class="form-group">
+              <label>Dinero inicio de turno ($)</label>
+              <input type="number" id="caja-dulces-inicio" placeholder="Ej: 90.00" step="0.01" inputmode="decimal"/>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="registrarMovCaja('dulces')">Registrar movimiento</button>
+        </div>
+
+        <div class="page-title" style="margin-top:18px">Movimientos de hoy</div>
+        <div id="caja-hist-dulces"><div class="empty-state">Sin movimientos hoy</div></div>
+      </div>
+
+      <!-- ── PANEL CAJA CIBER ── -->
+      <div id="caja-panel-ciber" style="display:none">
+        <div id="caja-resumen-ciber" style="margin-bottom:14px"><div class="empty-state">Cargando...</div></div>
+
+        <div class="card">
+          <div class="card-title">➕ Registrar movimiento — Ciber</div>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Tipo de movimiento</label>
+              <select id="caja-ciber-tipo">
+                <option value="ingreso">💵 Ingreso (dinero que entra)</option>
+                <option value="egreso">🔻 Egreso (dinero que sale)</option>
+                <option value="gasto_caja">🛒 Gasto de caja (compra/gasto)</option>
+              </select>
+            </div>
+            <div class="form-group form-full">
+              <label>Concepto *</label>
+              <input type="text" id="caja-ciber-concepto" placeholder="Ej: Pago de renta, retiré para…"/>
+            </div>
+            <div class="form-group">
+              <label>Monto ($) *</label>
+              <input type="number" id="caja-ciber-monto" placeholder="0.00" step="0.01" inputmode="decimal"/>
+            </div>
+            <div class="form-group">
+              <label>Dinero inicio de turno ($)</label>
+              <input type="number" id="caja-ciber-inicio" placeholder="Ej: 783.00" step="0.01" inputmode="decimal"/>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="registrarMovCaja('ciber')">Registrar movimiento</button>
+        </div>
+
+        <div class="page-title" style="margin-top:18px">Movimientos de hoy</div>
+        <div id="caja-hist-ciber"><div class="empty-state">Sin movimientos hoy</div></div>
+      </div>
     </div>
 
   </div><!-- /content -->
@@ -2364,6 +2911,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
     </button>
     <button class="nav-btn" data-tab="ciber" onclick="showTab('ciber')">
       <span class="icon">🖥️</span>Ciber
+    </button>
+    <button class="nav-btn" data-tab="cajas" onclick="showTab('cajas')">
+      <span class="icon">🏦</span>Cajas
     </button>
   </nav>
 </div>
