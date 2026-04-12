@@ -932,6 +932,7 @@
       loadCiberServicios();
       loadCiberTrabajos();
       loadReparaciones();
+      loadCiberStock();
       loadCajas();
       loadCofre();
       // Inicializar ticket con una línea vacía
@@ -939,6 +940,9 @@
       // Ocultar pestaña Servicios para alberto
       const tabServ = document.getElementById('ciber-tab-servicios');
       if (tabServ) tabServ.style.display = user.email === ALBERTO_EMAIL ? 'none' : '';
+      // Mostrar pestaña Stock solo al dueño
+      const tabStock = document.getElementById('ciber-tab-stock');
+      if (tabStock) tabStock.style.display = user.email === OWNER_EMAIL ? '' : 'none';
     } else {
       currentUser = null;
       scannerAgregar.stop({ containerId:'camera-container', btnId:'btn-camara' });
@@ -1579,18 +1583,27 @@
 
   window.setCiberVista = (vista) => {
     _ciberVista = vista;
+    const esOwner = currentUser?.email === OWNER_EMAIL;
     document.getElementById('ciber-panel-trabajos').style.display     = vista==='trabajos'     ? 'block':'none';
     document.getElementById('ciber-panel-servicios').style.display    = vista==='servicios'    ? 'block':'none';
     document.getElementById('ciber-panel-reparaciones').style.display = vista==='reparaciones' ? 'block':'none';
+    document.getElementById('ciber-panel-stock').style.display        = vista==='stock'        ? 'block':'none';
     document.getElementById('ciber-tab-trabajos').classList.toggle('ciber-tab-active',     vista==='trabajos');
     document.getElementById('ciber-tab-servicios').classList.toggle('ciber-tab-active',    vista==='servicios');
     document.getElementById('ciber-tab-reparaciones').classList.toggle('ciber-tab-active', vista==='reparaciones');
+    document.getElementById('ciber-tab-stock').classList.toggle('ciber-tab-active',        vista==='stock');
+    // Mostrar tab de stock solo al dueño
+    if (esOwner) document.getElementById('ciber-tab-stock').style.display = '';
     if (vista==='servicios')    renderCiberListaServicios();
     if (vista==='trabajos')     { renderCiberTrabajos(); renderCiberResumenHoy(); }
     if (vista==='reparaciones') renderReparaciones();
+    if (vista==='stock')        { renderCiberStock(); renderStockMovimientos(); renderStockResumen(); }
   };
 
   function renderCiber() {
+    const esOwner = currentUser?.email === OWNER_EMAIL;
+    const stockTab = document.getElementById('ciber-tab-stock');
+    if (stockTab) stockTab.style.display = esOwner ? '' : 'none';
     renderCiberServicioSelect();
     renderCiberTrabajos();
     renderCiberResumenHoy();
@@ -1939,12 +1952,191 @@
       vendedor: currentUser.email
     });
 
+    // ── Descontar stock automáticamente ──────────────────────────────
+    const { getDocs: _getDocs2, writeBatch, increment: _inc } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    const stockSnap2 = await _getDocs2(collection(db,'ciber_stock'));
+    const stockProds = stockSnap2.docs.map(d => ({id:d.id,...d.data()}));
+    const batch = writeBatch(db);
+    let huboDescuento = false;
+    for (const prod of stockProds) {
+      if (!prod.keywords) continue;
+      const kws = prod.keywords.split(',').map(k=>k.trim().toLowerCase()).filter(Boolean);
+      for (const linea of lineas) {
+        const descLower = linea.desc.toLowerCase();
+        const coincide = kws.some(k => k && descLower.includes(k));
+        if (coincide) {
+          const cantidad = linea.qty || 1;
+          batch.update(doc(db,'ciber_stock',prod.id), { cantidad: _inc(-cantidad) });
+          await addDoc(collection(db,'ciber_stock_movimientos'), {
+            productoId: prod.id,
+            productoNombre: prod.nombre,
+            tipo: 'descuento',
+            cantidad: -cantidad,
+            motivo: linea.desc,
+            fecha: Timestamp.now(),
+            vendedor: currentUser.email
+          });
+          huboDescuento = true;
+          break; // un producto de stock por línea
+        }
+      }
+    }
+    if (huboDescuento) await batch.commit();
+
     // Reset
     _ticketLineas = [];
     renderTicketLineas();
     document.getElementById('ct-cliente').value = '';
     document.getElementById('ct-tipo').value = 'cobrado';
     showToast(tipo==='fiado' ? `Fiado: ${cliente||'cliente'} — $${grandTotal.toFixed(2)}` : `Cobro registrado — $${grandTotal.toFixed(2)} ✓`);
+  };
+
+  // ── STOCK CIBER (solo dueño) ──────────────────────────────────────
+  let ciberStock = [];
+  let ciberStockMovimientos = [];
+
+  function loadCiberStock() {
+    const q = query(collection(db,'ciber_stock'), orderBy('nombre'));
+    onSnapshot(q, snap => {
+      ciberStock = snap.docs.map(d=>({id:d.id,...d.data()}));
+      renderCiberStock();
+      renderStockResumen();
+    }, err => console.error('ciber_stock:', err));
+
+    const qm = query(collection(db,'ciber_stock_movimientos'), orderBy('fecha','desc'));
+    onSnapshot(qm, snap => {
+      ciberStockMovimientos = snap.docs.map(d=>({id:d.id,...d.data()}));
+      renderStockMovimientos();
+      renderStockResumen();
+    }, err => console.error('ciber_stock_movimientos:', err));
+  }
+
+  function renderStockResumen() {
+    const totalHojas = ciberStock.reduce((a,p) => a + (p.cantidad||0), 0);
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const consumidasHoy = ciberStockMovimientos
+      .filter(m => m.tipo==='descuento' && m.fecha?.toDate()>=hoy)
+      .reduce((a,m) => a + Math.abs(m.cantidad||0), 0);
+    const elTotal = document.getElementById('stock-total-hojas');
+    const elCons  = document.getElementById('stock-consumidas-hoy');
+    if (elTotal) elTotal.textContent = totalHojas.toLocaleString('es-MX');
+    if (elCons)  elCons.textContent  = consumidasHoy.toLocaleString('es-MX');
+  }
+
+  function renderCiberStock() {
+    const cont = document.getElementById('ciber-stock-list');
+    if (!cont) return;
+    if (!ciberStock.length) { cont.innerHTML='<div class="empty-state">Sin productos de stock aún — agrégalos abajo</div>'; return; }
+    const esOwner = currentUser?.email === OWNER_EMAIL;
+    cont.innerHTML = ciberStock.map(p => {
+      const pct = Math.min(100, ((p.cantidad||0) / (p.stockInicial||500)) * 100);
+      const color = pct > 40 ? 'var(--green)' : pct > 15 ? 'var(--orange)' : 'var(--red)';
+      const alerta = pct <= 15 ? `<span style="font-size:.72rem;background:rgba(255,82,82,.15);color:var(--red);border-radius:6px;padding:2px 8px;margin-left:6px">⚠️ Stock bajo</span>` : '';
+      return `
+        <div style="padding:12px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-weight:600">${p.nombre}${alerta}</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:1.1rem;font-weight:800;color:${color}">${(p.cantidad||0).toLocaleString('es-MX')}</span>
+              <span style="font-size:.78rem;color:var(--muted)">${p.unidad||'hojas'}</span>
+              ${esOwner ? `
+                <button class="btn-icon" onclick="ajustarStockCiber('${p.id}','${p.nombre}',${p.cantidad||0},'sumar')" style="background:rgba(0,230,118,.12);color:var(--green);border:none;border-radius:6px;padding:4px 10px;font-size:.78rem;cursor:pointer">+ Sumar</button>
+                <button class="btn-icon btn-danger" onclick="eliminarStockCiber('${p.id}')" style="font-size:.78rem">🗑</button>
+              ` : ''}
+            </div>
+          </div>
+          <div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:${pct.toFixed(0)}%;background:${color};border-radius:3px;transition:width .4s"></div>
+          </div>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:4px">${pct.toFixed(0)}% del stock inicial (${(p.stockInicial||0).toLocaleString('es-MX')} ${p.unidad||'hojas'})</div>
+        </div>`;
+    }).join('');
+  }
+
+  function renderStockMovimientos() {
+    const cont = document.getElementById('ciber-stock-movimientos');
+    if (!cont) return;
+    const recientes = ciberStockMovimientos.slice(0, 30);
+    if (!recientes.length) { cont.innerHTML='<div class="empty-state">Sin movimientos registrados</div>'; return; }
+    cont.innerHTML = recientes.map(m => {
+      const f  = m.fecha?.toDate();
+      const fs = f ? f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}) : '';
+      const esPos = (m.cantidad||0) > 0;
+      const sign  = esPos ? '+' : '';
+      const color = esPos ? 'var(--green)' : 'var(--red)';
+      const icon  = esPos ? '📥' : '📤';
+      return `
+        <div class="venta-card">
+          <div class="venta-header">
+            <span>${icon} ${m.productoNombre||'Stock'}</span>
+            <span style="font-weight:800;color:${color}">${sign}${m.cantidad}</span>
+          </div>
+          <div class="venta-info">
+            <span style="color:var(--muted)">Motivo: ${m.motivo||m.tipo||'—'}</span>
+          </div>
+          <div class="venta-footer">${fs} · ${m.vendedor||''}</div>
+        </div>`;
+    }).join('');
+  }
+
+  window.guardarStockCiber = async () => {
+    if (currentUser?.email !== OWNER_EMAIL) { showToast('Solo el dueño puede gestionar el stock','error'); return; }
+    const nombre   = document.getElementById('cstock-nombre').value.trim();
+    const cantidad = parseInt(document.getElementById('cstock-cantidad').value) || 0;
+    const unidad   = document.getElementById('cstock-unidad').value;
+    const keywords = document.getElementById('cstock-keywords').value;
+    if (!nombre || cantidad <= 0) { showToast('Escribe nombre y cantidad válida','error'); return; }
+
+    // ¿Ya existe un producto con ese nombre?
+    const existente = ciberStock.find(p => p.nombre.toLowerCase() === nombre.toLowerCase());
+    if (existente) {
+      // Sumar al existente
+      const { increment: incr } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+      await updateDoc(doc(db,'ciber_stock',existente.id), { cantidad: incr(cantidad), keywords });
+      await addDoc(collection(db,'ciber_stock_movimientos'), {
+        productoId: existente.id, productoNombre: nombre,
+        tipo: 'ingreso', cantidad, motivo: 'Reposición manual',
+        fecha: Timestamp.now(), vendedor: currentUser.email
+      });
+      showToast(`+${cantidad} ${unidad} sumados a "${nombre}" ✓`);
+    } else {
+      // Nuevo producto
+      const ref = await addDoc(collection(db,'ciber_stock'), {
+        nombre, cantidad, unidad, keywords,
+        stockInicial: cantidad, creadoEn: Timestamp.now()
+      });
+      await addDoc(collection(db,'ciber_stock_movimientos'), {
+        productoId: ref.id, productoNombre: nombre,
+        tipo: 'ingreso', cantidad, motivo: 'Stock inicial',
+        fecha: Timestamp.now(), vendedor: currentUser.email
+      });
+      showToast(`Producto "${nombre}" creado con ${cantidad} ${unidad} ✓`);
+    }
+    document.getElementById('cstock-nombre').value   = '';
+    document.getElementById('cstock-cantidad').value = '';
+  };
+
+  window.ajustarStockCiber = async (id, nombre, actual, modo) => {
+    if (currentUser?.email !== OWNER_EMAIL) return;
+    const cant = parseInt(prompt(`¿Cuántas ${modo==='sumar'?'sumar a':'restar de'} "${nombre}"? (actual: ${actual})`));
+    if (!cant || isNaN(cant) || cant <= 0) return;
+    const delta = modo==='sumar' ? cant : -cant;
+    const { increment: incr } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    await updateDoc(doc(db,'ciber_stock',id), { cantidad: incr(delta) });
+    await addDoc(collection(db,'ciber_stock_movimientos'), {
+      productoId: id, productoNombre: nombre,
+      tipo: delta>0?'ingreso':'descuento', cantidad: delta,
+      motivo: delta>0?'Ajuste manual — ingreso':'Ajuste manual — salida',
+      fecha: Timestamp.now(), vendedor: currentUser.email
+    });
+    showToast(`${delta>0?'+'+delta:delta} ${nombre} ✓`);
+  };
+
+  window.eliminarStockCiber = async (id) => {
+    if (currentUser?.email !== OWNER_EMAIL) return;
+    if (!confirm('¿Eliminar este producto de stock?')) return;
+    await deleteDoc(doc(db,'ciber_stock',id));
+    showToast('Producto eliminado');
   };
 
   // ── Renders ciber ──────────────────────────────────────────────────
@@ -2633,10 +2825,12 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
 .ticket-linea{display:flex;align-items:center;gap:8px;margin-bottom:8px;animation:fadeIn .15s ease}
 .ticket-linea-desc{flex:1;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 11px;color:var(--text);font-size:.9rem;outline:none;font-family:'DM Sans',sans-serif}
 .ticket-linea-desc:focus{border-color:var(--accent)}
-.ticket-linea-precio{width:80px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 8px;color:var(--text);font-size:.9rem;text-align:right;outline:none;font-family:'DM Sans',sans-serif}
-.ticket-linea-precio:focus{border-color:var(--accent)}
-.ticket-linea-qty{width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 6px;color:var(--text);font-size:.9rem;text-align:center;outline:none;font-family:'DM Sans',sans-serif}
+.ticket-linea-qty{width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 6px;color:var(--text);font-size:.9rem;text-align:center;outline:none;font-family:'DM Sans',sans-serif;-moz-appearance:textfield;appearance:textfield}
+.ticket-linea-qty::-webkit-outer-spin-button,.ticket-linea-qty::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .ticket-linea-qty:focus{border-color:var(--accent)}
+.ticket-linea-precio{width:80px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 8px;color:var(--text);font-size:.9rem;text-align:right;outline:none;font-family:'DM Sans',sans-serif;-moz-appearance:textfield;appearance:textfield}
+.ticket-linea-precio::-webkit-outer-spin-button,.ticket-linea-precio::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.ticket-linea-precio:focus{border-color:var(--accent)}
 .ticket-linea-del{background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer;padding:4px 6px;border-radius:6px;flex-shrink:0;transition:color .15s}
 .ticket-linea-del:hover{color:var(--red)}
 .btn-ticket-add{width:100%;background:none;border:1.5px dashed var(--border);color:var(--muted);border-radius:10px;padding:11px;font-family:'DM Sans',sans-serif;font-size:.9rem;cursor:pointer;transition:all .2s;margin-top:4px}
@@ -2985,11 +3179,12 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
     <div class="tab-content" id="tab-ciber">
       <div class="page-title">🖥️ CiberPlanet — Ciber</div>
 
-      <!-- Tabs internos: Trabajos / Servicios / Reparaciones -->
+      <!-- Tabs internos: Trabajos / Servicios / Reparaciones / Stock -->
       <div class="ciber-tabs">
         <button id="ciber-tab-trabajos"     class="ciber-tab ciber-tab-active" onclick="setCiberVista('trabajos')">💼 Trabajos</button>
         <button id="ciber-tab-servicios"    class="ciber-tab" onclick="setCiberVista('servicios')">⚙️ Servicios</button>
         <button id="ciber-tab-reparaciones" class="ciber-tab" onclick="setCiberVista('reparaciones')">🔧 Reparaciones</button>
+        <button id="ciber-tab-stock"        class="ciber-tab" onclick="setCiberVista('stock')" style="display:none">📄 Stock</button>
       </div>
 
       <!-- ── PANEL TRABAJOS ───────────────────── -->
@@ -3102,7 +3297,62 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
         <div class="page-title" style="margin-top:18px">Historial de reparaciones</div>
         <div id="reparaciones-list"><div class="empty-state">Sin reparaciones registradas</div></div>
       </div>
-    </div>
+
+      <!-- ── PANEL STOCK HOJAS (solo dueño) ───── -->
+      <div id="ciber-panel-stock" style="display:none">
+        <div id="ciber-stock-resumen" style="margin-bottom:14px">
+          <div class="dash-grid" style="margin-bottom:0">
+            <div class="dash-card accent">
+              <div class="dash-label">📄 Total hojas</div>
+              <div class="dash-value" id="stock-total-hojas">—</div>
+              <div class="dash-sub">en inventario</div>
+            </div>
+            <div class="dash-card">
+              <div class="dash-label">📉 Consumidas hoy</div>
+              <div class="dash-value orange" id="stock-consumidas-hoy">0</div>
+              <div class="dash-sub">impresiones + copias</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📦 Inventario de papel</div>
+          <div id="ciber-stock-list"><div class="empty-state">Sin productos de stock aún</div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">➕ Agregar / actualizar producto de stock</div>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Nombre del producto *</label>
+              <input type="text" id="cstock-nombre" placeholder="Ej: Hojas carta, Hojas oficio, Tóner…"/>
+            </div>
+            <div class="form-group">
+              <label>Cantidad a agregar *</label>
+              <input type="number" id="cstock-cantidad" placeholder="500" min="1" inputmode="numeric" style="-moz-appearance:textfield;appearance:textfield"/>
+            </div>
+            <div class="form-group">
+              <label>Unidad</label>
+              <select id="cstock-unidad" style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif;width:100%">
+                <option value="hoja">Hojas</option>
+                <option value="pieza">Piezas</option>
+                <option value="cartucho">Cartuchos</option>
+                <option value="litro">Litros</option>
+              </select>
+            </div>
+            <div class="form-group form-full">
+              <label>¿Descontar automáticamente al registrar cobros?</label>
+              <select id="cstock-keywords" style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font-size:.88rem;outline:none;font-family:'DM Sans',sans-serif;width:100%">
+                <option value="impresion,copia,imprimir,copiar,hoja,col,bn,b&n">Sí — descontar por cada impresión o copia</option>
+                <option value="">No — no descontar automáticamente</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="guardarStockCiber()">💾 Guardar producto de stock</button>
+        </div>
+        <div class="page-title" style="margin-top:18px">Movimientos de stock</div>
+        <div id="ciber-stock-movimientos"><div class="empty-state">Sin movimientos registrados</div></div>
+      </div>
+
+    </div><!-- /tab-ciber -->
 
     <!-- ══════════════════════════════════════════
          CAJAS TAB
