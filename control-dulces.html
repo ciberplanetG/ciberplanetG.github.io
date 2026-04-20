@@ -2576,9 +2576,32 @@
   };
   window.eliminarMovCaja=async(seccion,id)=>{
     if(currentUser?.email!==OWNER_EMAIL){showToast('Solo el dueño puede eliminar','error');return;}
-    if(!confirm('¿Eliminar este movimiento?'))return;
-    await deleteDoc(doc(db,seccion==='dulces'?'caja_dulces':'caja_ciber',id));
+    // Abrir modal de PIN de caja
+    document.getElementById('caja-pin-seccion').value = seccion;
+    document.getElementById('caja-pin-id').value      = id;
+    document.getElementById('caja-pin-input').value   = '';
+    document.getElementById('caja-pin-error').textContent = '';
+    const modal = document.getElementById('caja-pin-modal');
+    modal.style.display = 'flex';
+    setTimeout(()=>document.getElementById('caja-pin-input')?.focus(), 80);
+  };
+  window.confirmarEliminarMovCaja = async () => {
+    const pin     = document.getElementById('caja-pin-input').value.trim();
+    const seccion = document.getElementById('caja-pin-seccion').value;
+    const id      = document.getElementById('caja-pin-id').value;
+    const errEl   = document.getElementById('caja-pin-error');
+    if (pin !== DELETE_PIN) {
+      errEl.textContent = '❌ NIP incorrecto';
+      document.getElementById('caja-pin-input').value = '';
+      document.getElementById('caja-pin-input').focus();
+      return;
+    }
+    cerrarCajaPinModal();
+    await deleteDoc(doc(db, seccion==='dulces'?'caja_dulces':'caja_ciber', id));
     showToast('Movimiento eliminado');
+  };
+  window.cerrarCajaPinModal = () => {
+    document.getElementById('caja-pin-modal').style.display = 'none';
   };
   function renderCajaPanel(seccion){
     const movs    = seccion==='dulces' ? cajasDulces : cajasCiber;
@@ -3916,5 +3939,23 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
     </div>
   </div>
 </div>
+<!-- CAJA PIN MODAL -->
+<div id="caja-pin-modal" class="pin-modal-overlay" onclick="if(event.target===this)cerrarCajaPinModal()" style="display:none;align-items:center;justify-content:center">
+  <div class="pin-modal">
+    <div class="pin-modal-title">🔐 Confirmar eliminación</div>
+    <div class="pin-modal-sub">Ingresa el NIP para eliminar este movimiento</div>
+    <input type="hidden" id="caja-pin-seccion"/>
+    <input type="hidden" id="caja-pin-id"/>
+    <input class="pin-input" id="caja-pin-input" type="password" inputmode="numeric"
+      maxlength="8" placeholder="••••••••"
+      onkeydown="if(event.key==='Enter') confirmarEliminarMovCaja()"/>
+    <div class="pin-error" id="caja-pin-error"></div>
+    <div class="pin-btn-row">
+      <button class="pin-btn-cancel" onclick="cerrarCajaPinModal()">Cancelar</button>
+      <button class="pin-btn-confirm" onclick="confirmarEliminarMovCaja()">Eliminar</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
