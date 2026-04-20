@@ -1341,110 +1341,131 @@
   function renderDashboard() {
     const cont = document.getElementById('dashboard-content');
     if (!cont) return;
-    const hoy = new Date(); hoy.setHours(0,0,0,0);
 
-    // Dulces
-    const vh  = ventas.filter(v => v.fecha?.toDate() >= hoy);
-    const tv  = vh.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0);
-    const td  = vh.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0),0);
-    const tg  = vh.reduce((a,v)=>a+(v.gananciaTotal||0),0);
-    const tc  = vh.reduce((a,v)=>a+(v.costoTotal||0),0);
-    const nv  = vh.filter(v=>v.tipo==='venta').length;
-    const nd  = vh.filter(v=>v.tipo==='debe').length;
+    const hoy       = new Date();
+    const inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    const inicioHoy = new Date(hoy); inicioHoy.setHours(0,0,0,0);
+    const mesNombre = hoy.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
 
-    // Ciber
-    const ch  = ciberTrabajos.filter(t => t.fecha?.toDate() >= hoy);
-    const tc2 = ch.filter(t=>t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
-    const tf2 = ch.filter(t=>t.tipo==='fiado').reduce((a,t)=>a+(t.total||0),0);
-    const tg2 = ch.reduce((a,t)=>a+(t.gananciaTotal||0),0);
+    // ── DULCES del mes ──────────────────────────────────────────────
+    const vm     = ventas.filter(v => v.fecha?.toDate() >= inicioMes);
+    const tgMes  = vm.reduce((a,v) => a + (v.gananciaTotal||0), 0);
+    const tcMes  = vm.reduce((a,v) => a + (v.costoTotal||0),   0);
+    const tdMes  = vm.filter(v=>v.tipo==='debe').reduce((a,v)=>a+(v.total||0), 0);
+    const ndMes  = vm.filter(v=>v.tipo==='debe').length;
+    const nvMes  = vm.filter(v=>v.tipo==='venta').length;
+    // Egresos de caja dulces del mes
+    const cajaDGastos = (cajasDulces||[]).filter(m => {
+      const f = m.fecha?.toDate(); return f >= inicioMes && (m.tipo==='egreso'||m.tipo==='gasto_caja');
+    }).reduce((a,m)=>a+(m.monto||0), 0);
+    const totalGastosDulces = tcMes + cajaDGastos;
 
-    const pp  = {};
-    vh.forEach(v => { if(!pp[v.productoNombre]) pp[v.productoNombre]={total:0,cantidad:0};
-      pp[v.productoNombre].total+=v.total||0; pp[v.productoNombre].cantidad+=v.cantidad||0; });
+    // Hoy (dulces) — subtítulo de ganancia
+    const vh   = ventas.filter(v => v.fecha?.toDate() >= inicioHoy);
+    const tgH  = vh.reduce((a,v)=>a+(v.gananciaTotal||0), 0);
+    const tvH  = vh.filter(v=>v.tipo==='venta').reduce((a,v)=>a+(v.total||0), 0);
+
+    // ── CIBER del mes ───────────────────────────────────────────────
+    const cm     = ciberTrabajos.filter(t => t.fecha?.toDate() >= inicioMes);
+    const tg2Mes = cm.reduce((a,t) => a + (t.gananciaTotal||0), 0);
+    const tv2Mes = cm.filter(t=>t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0), 0);
+    const tf2All = ciberTrabajos.filter(t=>t.tipo==='fiado').reduce((a,t)=>a+(t.total||0), 0);
+    // Egresos de caja ciber del mes
+    const cajaCGastos = (cajasCiber||[]).filter(m => {
+      const f = m.fecha?.toDate(); return f >= inicioMes && (m.tipo==='egreso'||m.tipo==='gasto_caja');
+    }).reduce((a,m)=>a+(m.monto||0), 0);
+
+    // Hoy (ciber) — subtítulo
+    const ch   = ciberTrabajos.filter(t => t.fecha?.toDate() >= inicioHoy);
+    const tg2H = ch.reduce((a,t)=>a+(t.gananciaTotal||0), 0);
+
+    // ── Top dulces del mes ──────────────────────────────────────────
+    const pp = {};
+    vm.forEach(v => {
+      if (!pp[v.productoNombre]) pp[v.productoNombre] = { total:0, cantidad:0 };
+      pp[v.productoNombre].total    += v.total||0;
+      pp[v.productoNombre].cantidad += v.cantidad||0;
+    });
     const top = Object.entries(pp).sort((a,b)=>b[1].total-a[1].total).slice(0,5);
 
     cont.innerHTML = `
+      <!-- ── DULCES ── -->
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">🍬 Dulces</div>
-        <button onclick="toggleSoloGanancia()" id="btn-solo-ganancia"
-          style="font-size:.72rem;font-family:'DM Sans',sans-serif;background:rgba(61,220,132,.12);border:1px solid rgba(61,220,132,.3);color:var(--green);border-radius:20px;padding:4px 12px;cursor:pointer">
-          👁 Solo ganancia
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">🍬 Dulces — ${mesNombre}</div>
+        <button onclick="toggleDashExtra()" id="btn-dash-extra"
+          style="font-size:.72rem;font-family:'DM Sans',sans-serif;background:rgba(100,100,120,.15);border:1px solid rgba(150,150,180,.25);color:var(--muted);border-radius:20px;padding:4px 12px;cursor:pointer">
+          ＋ Ver detalles
         </button>
       </div>
-      <div class="dash-grid" id="dash-cards-dulces">
-        <div class="dash-card accent dash-card-ventas">
-          <div class="dash-label">Ventas del día</div>
-          <div class="dash-value">$${tv.toFixed(2)}</div>
-          <div class="dash-sub">${nv} transacciones</div>
-        </div>
-        <div class="dash-card dash-card-ganancia">
+      <div class="dash-grid">
+        <div class="dash-card">
           <div class="dash-label">Ganancia neta</div>
-          <div class="dash-value green">$${tg.toFixed(2)}</div>
-          <div class="dash-sub">Costo: $${tc.toFixed(2)}</div>
+          <div class="dash-value green">$${tgMes.toFixed(2)}</div>
+          <div class="dash-sub">Hoy: $${tgH.toFixed(2)} · ${nvMes} ventas del mes</div>
         </div>
-        <div class="dash-card dash-card-debes">
+        <div class="dash-card">
+          <div class="dash-label">Gastos netos</div>
+          <div class="dash-value orange">$${totalGastosDulces.toFixed(2)}</div>
+          <div class="dash-sub">Costo productos + egresos caja</div>
+        </div>
+        <div class="dash-card dash-extra" style="display:none">
           <div class="dash-label">Debes pendientes</div>
-          <div class="dash-value orange">$${td.toFixed(2)}</div>
-          <div class="dash-sub">${nd} registros</div>
+          <div class="dash-value orange">$${tdMes.toFixed(2)}</div>
+          <div class="dash-sub">${ndMes} registros este mes</div>
         </div>
-        <div class="dash-card dash-card-stock">
+        <div class="dash-card dash-extra" style="display:none">
           <div class="dash-label">Productos en stock</div>
           <div class="dash-value">${productos.length}</div>
           <div class="dash-sub">${productos.filter(p=>p.stock<=5).length} stock bajo</div>
         </div>
       </div>
 
-      <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:14px 0 8px">🖥️ Ciber</div>
+      <!-- ── CIBER ── -->
+      <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:14px 0 8px">🖥️ Ciber — ${mesNombre}</div>
       <div class="dash-grid">
-        <div class="dash-card accent">
-          <div class="dash-label">Cobrado hoy</div>
-          <div class="dash-value">$${tc2.toFixed(2)}</div>
-          <div class="dash-sub">${ch.filter(t=>t.tipo==='cobrado').length} trabajos</div>
+        <div class="dash-card">
+          <div class="dash-label">Ganancia neta ciber</div>
+          <div class="dash-value green">$${tg2Mes.toFixed(2)}</div>
+          <div class="dash-sub">Hoy: $${tg2H.toFixed(2)} · $${tv2Mes.toFixed(2)} cobrado</div>
         </div>
         <div class="dash-card">
-          <div class="dash-label">Ganancia ciber</div>
-          <div class="dash-value green">$${tg2.toFixed(2)}</div>
-          <div class="dash-sub">${ch.length} registros</div>
+          <div class="dash-label">Gastos ciber</div>
+          <div class="dash-value orange">$${cajaCGastos.toFixed(2)}</div>
+          <div class="dash-sub">Egresos de caja del mes</div>
         </div>
-        <div class="dash-card" style="grid-column:1/-1">
+        <div class="dash-card dash-extra" style="display:none;grid-column:1/-1">
           <div class="dash-label">🤝 Fiados ciber pendientes</div>
-          <div class="dash-value orange">$${tf2.toFixed(2)}</div>
+          <div class="dash-value orange">$${tf2All.toFixed(2)}</div>
         </div>
       </div>
 
-      ${top.length?`<div class="top-section"><div class="section-title">Top dulces hoy</div>
+      ${top.length ? `<div class="top-section dash-extra" style="display:none"><div class="section-title">Top dulces del mes</div>
         ${top.map(([n,d])=>`<div class="top-row"><span>${n}</span><span>${d.cantidad} pzas · <b>$${d.total.toFixed(2)}</b></span></div>`).join('')}
-      </div>`:''}
+      </div>` : ''}
+
       <button class="btn-excel" onclick="exportarExcel()">📊 Exportar Excel del día</button>`;
 
-    // Renderizar gráfica después de insertar el HTML
+    // Re-aplicar estado del toggle si estaba abierto
+    if (_dashExtraVisible) _setDashExtra(true);
+
     setTimeout(() => renderGraficaVentas(), 50);
   }
 
-  let _soloGanancia = false;
-  window.toggleSoloGanancia = () => {
-    _soloGanancia = !_soloGanancia;
-    const btn = document.getElementById('btn-solo-ganancia');
-    const cards = {
-      ventas: document.querySelector('.dash-card-ventas'),
-      debes:  document.querySelector('.dash-card-debes'),
-      stock:  document.querySelector('.dash-card-stock'),
-      ganancia: document.querySelector('.dash-card-ganancia'),
-    };
-    if (_soloGanancia) {
-      if (cards.ventas) cards.ventas.style.display = 'none';
-      if (cards.debes)  cards.debes.style.display  = 'none';
-      if (cards.stock)  cards.stock.style.display  = 'none';
-      if (cards.ganancia) { cards.ganancia.style.gridColumn = '1/-1'; }
-      if (btn) { btn.textContent = '👁 Ver todo'; btn.style.background = 'rgba(245,200,66,.15)'; btn.style.borderColor = 'rgba(245,200,66,.4)'; btn.style.color = 'var(--accent)'; }
-    } else {
-      if (cards.ventas) cards.ventas.style.display = '';
-      if (cards.debes)  cards.debes.style.display  = '';
-      if (cards.stock)  cards.stock.style.display  = '';
-      if (cards.ganancia) { cards.ganancia.style.gridColumn = ''; }
-      if (btn) { btn.textContent = '👁 Solo ganancia'; btn.style.background = 'rgba(61,220,132,.12)'; btn.style.borderColor = 'rgba(61,220,132,.3)'; btn.style.color = 'var(--green)'; }
+  let _dashExtraVisible = false;
+  function _setDashExtra(visible) {
+    _dashExtraVisible = visible;
+    document.querySelectorAll('.dash-extra').forEach(el => {
+      el.style.display = visible ? '' : 'none';
+    });
+    const btn = document.getElementById('btn-dash-extra');
+    if (btn) {
+      btn.textContent = visible ? '− Ocultar detalles' : '＋ Ver detalles';
+      btn.style.background    = visible ? 'rgba(61,220,132,.12)' : 'rgba(100,100,120,.15)';
+      btn.style.borderColor   = visible ? 'rgba(61,220,132,.3)'  : 'rgba(150,150,180,.25)';
+      btn.style.color         = visible ? 'var(--green)'         : 'var(--muted)';
     }
-  };
+  }
+  window.toggleDashExtra = () => _setDashExtra(!_dashExtraVisible);
 
   window.exportarGraficaExcel = () => {
     const desde = document.getElementById('grafica-desde')?.value;
@@ -2560,30 +2581,31 @@
     showToast('Movimiento eliminado');
   };
   function renderCajaPanel(seccion){
-    const movs=seccion==='dulces'?cajasDulces:cajasCiber;
-    const hoy=new Date();hoy.setHours(0,0,0,0);
-    const movsHoy=movs.filter(m=>m.fecha?.toDate()>=hoy);
+    const movs    = seccion==='dulces' ? cajasDulces : cajasCiber;
+    const hoy     = new Date(); hoy.setHours(0,0,0,0);
+    const esOwner = currentUser?.email === OWNER_EMAIL;
 
-    // Ventas brutas del día (lo que entró a la caja)
-    const totalHoy=seccion==='dulces'
-      ?ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0)
-      :ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    // Separar cierres de movimientos normales
+    const cierres   = movs.filter(m => m.tipo === 'cierre_caja');
+    const movsHoy   = movs.filter(m => m.fecha?.toDate() >= hoy && m.tipo !== 'cierre_caja');
 
-    // Ganancia REAL (precio de venta menos costo del producto)
-    const gananciaReal=seccion==='dulces'
-      ?ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.gananciaTotal||0),0)
-      :ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.gananciaTotal||0),0);
+    // ── Resumen del día ────────────────────────────────────────────
+    const totalHoy = seccion==='dulces'
+      ? ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.total||0),0)
+      : ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.total||0),0);
+    const gananciaReal = seccion==='dulces'
+      ? ventas.filter(v=>v.fecha?.toDate()>=hoy&&v.tipo==='venta').reduce((a,v)=>a+(v.gananciaTotal||0),0)
+      : ciberTrabajos.filter(t=>t.fecha?.toDate()>=hoy&&t.tipo==='cobrado').reduce((a,t)=>a+(t.gananciaTotal||0),0);
 
-    const inicioPrimero=movsHoy.filter(m=>m.turnoInicio>0)[0]?.turnoInicio||0;
-    const totalEgresos=movsHoy.filter(m=>m.tipo==='egreso').reduce((a,m)=>a+(m.monto||0),0);
-    const totalGastos=movsHoy.filter(m=>m.tipo==='gasto_caja').reduce((a,m)=>a+(m.monto||0),0);
-    const totalIngresos=movsHoy.filter(m=>m.tipo==='ingreso').reduce((a,m)=>a+(m.monto||0),0);
-    const dineroFinal=inicioPrimero+totalHoy+totalIngresos-totalEgresos-totalGastos;
-    // Ganancia neta = ganancia real de productos - gastos operativos del día
-    const gananciaNeta=gananciaReal-totalGastos-totalEgresos+totalIngresos;
-    const esOwner=currentUser?.email===OWNER_EMAIL;
-    const contR=document.getElementById(`caja-resumen-${seccion}`);
-    if(contR)contR.innerHTML=`
+    const inicioPrimero = movsHoy.filter(m=>m.turnoInicio>0)[0]?.turnoInicio || 0;
+    const totalEgresos  = movsHoy.filter(m=>m.tipo==='egreso').reduce((a,m)=>a+(m.monto||0),0);
+    const totalGastos   = movsHoy.filter(m=>m.tipo==='gasto_caja').reduce((a,m)=>a+(m.monto||0),0);
+    const totalIngresos = movsHoy.filter(m=>m.tipo==='ingreso').reduce((a,m)=>a+(m.monto||0),0);
+    const dineroFinal   = inicioPrimero + totalHoy + totalIngresos - totalEgresos - totalGastos;
+    const gananciaNeta  = gananciaReal - totalGastos - totalEgresos + totalIngresos;
+
+    const contR = document.getElementById(`caja-resumen-${seccion}`);
+    if (contR) contR.innerHTML = `
       <div class="dash-grid" style="margin-bottom:14px">
         <div class="dash-card accent"><div class="dash-label">💵 Ventas del día</div><div class="dash-value green">$${totalHoy.toFixed(2)}</div></div>
         <div class="dash-card"><div class="dash-label">🏁 Inicio turno</div><div class="dash-value">$${inicioPrimero.toFixed(2)}</div></div>
@@ -2591,20 +2613,73 @@
         <div class="dash-card"><div class="dash-label">📈 Ganancia real</div><div class="dash-value green">$${gananciaNeta.toFixed(2)}</div><div class="dash-sub" style="font-size:.65rem;color:var(--muted)">Venta − costo producto</div></div>
         ${totalEgresos||totalGastos?`<div class="dash-card" style="grid-column:1/-1"><div class="dash-label">🔻 Egresos / Gastos del día</div><div class="dash-value orange">-$${(totalEgresos+totalGastos).toFixed(2)}</div></div>`:''}
       </div>`;
-    const contH=document.getElementById(`caja-hist-${seccion}`);
-    if(contH){
-      if(!movsHoy.length){contH.innerHTML='<div class="empty-state">Sin movimientos hoy</div>';return;}
-      contH.innerHTML=movsHoy.map(m=>{
-        const f=m.fecha?.toDate();const fs=f?f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}):'';
-        const color=m.tipo==='egreso'||m.tipo==='gasto_caja'?'var(--red)':'var(--green)';
-        const sign=m.tipo==='egreso'||m.tipo==='gasto_caja'?'-':'+';
-        const label=m.tipo==='egreso'?'🔻 Egreso':m.tipo==='gasto_caja'?'🛒 Gasto':'💵 Ingreso';
-        return `<div class="venta-card">
-          <div class="venta-header"><span class="venta-nombre">${m.concepto}</span><span style="font-family:Syne,sans-serif;font-weight:800;color:${color}">${sign}$${(m.monto||0).toFixed(2)}</span></div>
-          <div class="venta-info"><span>${label}</span>${m.turnoInicio?`<span>Inicio turno: $${m.turnoInicio.toFixed(2)}</span>`:''}</div>
-          <div class="venta-footer" style="display:flex;justify-content:space-between">${fs} · ${m.registradoPor||''}${esOwner?`<button class="btn-del-venta" onclick="eliminarMovCaja('${seccion}','${m.id}')">🗑</button>`:''}</div>
-        </div>`;
-      }).join('');
+
+    // ── Movimientos de hoy ────────────────────────────────────────
+    const contH = document.getElementById(`caja-hist-${seccion}`);
+    if (contH) {
+      if (!movsHoy.length) {
+        contH.innerHTML = '<div class="empty-state">Sin movimientos hoy</div>';
+      } else {
+        contH.innerHTML = movsHoy.map(m => {
+          const f   = m.fecha?.toDate();
+          const fs  = f ? f.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}) : '';
+          const color = m.tipo==='egreso'||m.tipo==='gasto_caja' ? 'var(--red)' : 'var(--green)';
+          const sign  = m.tipo==='egreso'||m.tipo==='gasto_caja' ? '-' : '+';
+          const label = m.tipo==='egreso' ? '🔻 Egreso' : m.tipo==='gasto_caja' ? '🛒 Gasto' : '💵 Ingreso';
+          return `<div class="venta-card">
+            <div class="venta-header"><span class="venta-nombre">${m.concepto}</span><span style="font-family:Syne,sans-serif;font-weight:800;color:${color}">${sign}$${(m.monto||0).toFixed(2)}</span></div>
+            <div class="venta-info"><span>${label}</span>${m.turnoInicio?`<span>Inicio turno: $${m.turnoInicio.toFixed(2)}</span>`:''}</div>
+            <div class="venta-footer" style="display:flex;justify-content:space-between">${fs} · ${m.registradoPor||''}${esOwner?`<button class="btn-del-venta" onclick="eliminarMovCaja('${seccion}','${m.id}')">🗑</button>`:''}</div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // ── Historial de cierres ──────────────────────────────────────
+    const contC = document.getElementById(`caja-cierres-${seccion}`);
+    if (contC) {
+      if (!cierres.length) {
+        contC.innerHTML = '<div class="empty-state">Sin cierres registrados aún</div>';
+      } else {
+        contC.innerHTML = cierres.map(m => {
+          const f   = m.fecha?.toDate();
+          const fs  = f ? f.toLocaleDateString('es-MX',{weekday:'short',day:'2-digit',month:'short',year:'2-digit'}) : '';
+          const hs  = f ? f.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) : '';
+          const dif = m.diferencia ?? 0;
+          const difColor = Math.abs(dif) < 0.01 ? 'var(--green)' : dif < 0 ? 'var(--red)' : 'var(--orange)';
+          const difBg    = Math.abs(dif) < 0.01 ? 'rgba(61,220,132,.08)' : dif < 0 ? 'rgba(255,77,109,.08)' : 'rgba(255,159,67,.08)';
+          const difIcon  = Math.abs(dif) < 0.01 ? '✅' : dif < 0 ? '⚠️' : 'ℹ️';
+          const difLabel = Math.abs(dif) < 0.01 ? 'Cuadrada' : dif < 0 ? `Falta $${Math.abs(dif).toFixed(2)}` : `Sobran $${dif.toFixed(2)}`;
+          const ventas_  = (m.ventasHoy ?? 0).toFixed(2);
+          const total_   = (m.totalCaja ?? m.monto ?? 0).toFixed(2);
+          const inicio_  = (m.turnoInicio ?? 0).toFixed(2);
+          return `<div class="venta-card" style="border-left:3px solid ${difColor};padding:14px">
+            <div class="venta-header" style="margin-bottom:8px">
+              <span class="venta-nombre">📅 ${fs} <span style="color:var(--muted);font-weight:400;font-size:.78rem">· ${hs}</span></span>
+              <span style="font-family:'Syne',sans-serif;font-weight:800;font-size:.88rem;color:${difColor};background:${difBg};padding:3px 10px;border-radius:20px">${difIcon} ${difLabel}</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.82rem">
+              <div style="background:var(--surface2);border-radius:8px;padding:8px 10px">
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">💰 Total en caja</div>
+                <div style="font-family:'Syne',sans-serif;font-weight:700">$${total_}</div>
+              </div>
+              <div style="background:var(--surface2);border-radius:8px;padding:8px 10px">
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">📈 Ventas del día</div>
+                <div style="font-family:'Syne',sans-serif;font-weight:700;color:var(--green)">$${ventas_}</div>
+              </div>
+              <div style="background:var(--surface2);border-radius:8px;padding:8px 10px">
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">🏁 Inicio turno</div>
+                <div style="font-family:'Syne',sans-serif;font-weight:700">$${inicio_}</div>
+              </div>
+              <div style="background:var(--surface2);border-radius:8px;padding:8px 10px">
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">👤 Registró</div>
+                <div style="font-size:.78rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${(m.registradoPor||'').split('@')[0]}</div>
+              </div>
+            </div>
+            ${esOwner?`<div style="text-align:right;margin-top:8px"><button class="btn-del-venta" onclick="eliminarMovCaja('${seccion}','${m.id}')">🗑 Eliminar</button></div>`:''}
+          </div>`;
+        }).join('');
+      }
     }
   }
   function renderCajas(){renderCajaPanel('dulces');renderCajaPanel('ciber');}
@@ -3652,6 +3727,12 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
 
       <div class="page-title" style="margin-top:18px">Movimientos de hoy</div>
       <div id="caja-hist-dulces"><div class="empty-state">Sin movimientos hoy</div></div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin:22px 0 10px">
+        <div class="page-title" style="margin-bottom:0">📋 Historial de cierres</div>
+        <span style="font-size:.72rem;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 10px">Dulces</span>
+      </div>
+      <div id="caja-cierres-dulces"><div class="empty-state">Sin cierres registrados aún</div></div>
     </div>
 
     <!-- Panel Ciber -->
@@ -3728,6 +3809,12 @@ input[id^="cofre-edit-"]::-webkit-outer-spin-button,input[id^="cofre-edit-"]::-w
 
       <div class="page-title" style="margin-top:18px">Movimientos de hoy</div>
       <div id="caja-hist-ciber"><div class="empty-state">Sin movimientos hoy</div></div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin:22px 0 10px">
+        <div class="page-title" style="margin-bottom:0">📋 Historial de cierres</div>
+        <span style="font-size:.72rem;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 10px">Ciber</span>
+      </div>
+      <div id="caja-cierres-ciber"><div class="empty-state">Sin cierres registrados aún</div></div>
     </div>
   </div><!-- /tab-cajas -->
 
